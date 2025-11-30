@@ -129,9 +129,9 @@ async def start_pm(client, message: Message, _):
         served_chats_coro, served_users_coro, stats_coro
     )
 
-    await message.reply_video(
-        random.choice(START_VIDS),
-        caption=random.choice(AYUV).format(
+    await message.reply_photo(
+        photo=config.START_IMG_URL,
+        caption=WELCOME_TEXT.format(
             message.from_user.mention, app.mention, UP, DISK, CPU, RAM, len(served_users), len(served_chats)
         ),
         reply_markup=InlineKeyboardMarkup(out),
@@ -155,8 +155,8 @@ async def start_gp(client, message: Message, _):
     out = start_panel(_)
     uptime = int(time.time() - _boot_)
     try:
-        await message.reply_video(
-            random.choice(START_VIDS),
+        await message.reply_photo(
+            photo=config.START_IMG_URL,
             caption=_["start_1"].format(app.mention, get_readable_time(uptime)),
             reply_markup=InlineKeyboardMarkup(out),
         )
