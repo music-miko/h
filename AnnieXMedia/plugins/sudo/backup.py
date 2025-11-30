@@ -59,7 +59,7 @@ async def _create_backup_zip() -> str:
     await asyncio.gather(*tasks)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    zip_name = f"AnnieXMedia_Backup_{timestamp}.zip"
+    zip_name = f"TeamArc_Backup_{timestamp}.zip"
     zip_path = os.path.join(BACKUP_DIR, zip_name)
 
     LOGGER(__name__).info(f"📦 Creating backup archive: {zip_name}")
