@@ -122,9 +122,6 @@ async def start_pm(client, message: Message, _):
             return
 
     out = private_panel(_)
-    sticker_message = await message.reply_sticker(sticker=random.choice(STICKERS))
-    asyncio.create_task(delete_sticker_after_delay(sticker_message, 2))
-
     served_chats_coro = get_served_chats()
     served_users_coro = get_served_users()
     stats_coro = bot_sys_stats()
