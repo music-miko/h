@@ -182,7 +182,7 @@ async def leave_all(app, message):
     try:
         userbot = await get_assistant(message.chat.id)
         async for dialog in userbot.get_dialogs():
-            if dialog.chat.id == -1002014167331:
+            if dialog.chat.id == LOGGER_ID:
                 continue
             max_retries = 3
             for attempt in range(max_retries):
