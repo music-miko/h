@@ -15,7 +15,7 @@ from config import MONGO_DB_URI, OWNER_ID
 from AnnieXMedia.logging import LOGGER
 from AnnieXMedia.core.dir import BACKUP_DIR
 
-DB_NAME = "deadline"
+DB_NAME = "Yukki"
 TEMP_DIR = os.path.join(BACKUP_DIR, "tmp")
 LOGGER_ID = -1003302898507
 
