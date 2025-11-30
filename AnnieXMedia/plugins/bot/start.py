@@ -26,7 +26,7 @@ from AnnieXMedia.utils.decorators.language import LanguageStart
 from AnnieXMedia.utils.formatters import get_readable_time
 from AnnieXMedia.utils.inline.start import private_panel, start_panel
 from AnnieXMedia.utils.inline.help import first_page
-from config import BANNED_USERS, AYUV, HELP_IMG_URL, START_VIDS, STICKERS
+from config import BANNED_USERS, WELCOME_TEXT, HELP_IMG_URL, START_IMG_URL, STICKERS
 from strings import get_string
 
 
