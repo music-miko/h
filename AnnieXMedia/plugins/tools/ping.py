@@ -9,7 +9,7 @@ from AnnieXMedia.core.call import StreamController
 from AnnieXMedia.utils import bot_sys_stats
 from AnnieXMedia.utils.decorators.language import language
 from AnnieXMedia.utils.inline import supp_markup
-from config import BANNED_USERS, PING_VID_URL
+from config import BANNED_USERS, PING_IMG_URL
 
 
 @app.on_message(filters.command("ping", prefixes=["/", "."]) & ~BANNED_USERS)
@@ -17,7 +17,7 @@ from config import BANNED_USERS, PING_VID_URL
 async def ping_com(client, message: Message, _):
     start = datetime.now()
     response = await message.reply_video(
-        video=PING_VID_URL,
+        photo=PING_IMG_URL,
         caption=_["ping_1"].format(app.mention),
     )
     pytgping = await StreamController.ping()
