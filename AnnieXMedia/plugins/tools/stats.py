@@ -34,7 +34,7 @@ async def _edit_media_or_reply_with_video(cbq, caption: str, reply_markup):
         )
 
 
-@app.on_message(filters.command(["stats", "gstats"]) & ~BANNED_USERS)
+@app.on_message(filters.command(["stats", "gstats"]) & SUDOERS & ~BANNED_USERS)
 @language
 async def open_stats(client, message: Message, _):
     is_sudo = message.from_user and (message.from_user.id in SUDOERS)
