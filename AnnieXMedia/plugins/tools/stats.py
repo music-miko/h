@@ -25,12 +25,12 @@ from config import BANNED_USERS
 
 
 async def _edit_media_or_reply_with_video(cbq, caption: str, reply_markup):
-    media = InputMediaVideo(media=config.STATS_VID_URL, caption=caption)
+    media = InputMediaVideo(media=config.STATS_IMG_URL, caption=caption)
     try:
         await cbq.edit_message_media(media=media, reply_markup=reply_markup)
     except MessageIdInvalid:
-        await cbq.message.reply_video(
-            video=config.STATS_VID_URL, caption=caption, reply_markup=reply_markup
+        await cbq.message.reply_photo(
+            photo=config.STATS_IMG_URL, caption=caption, reply_markup=reply_markup
         )
 
 
@@ -39,8 +39,8 @@ async def _edit_media_or_reply_with_video(cbq, caption: str, reply_markup):
 async def open_stats(client, message: Message, _):
     is_sudo = message.from_user and (message.from_user.id in SUDOERS)
     keyboard = build_stats_keyboard(_, is_sudo)
-    await message.reply_video(
-        video=config.STATS_VID_URL,
+    await message.reply_photo(
+        photo=config.STATS_IMG_URL,
         caption=_["gstats_2"].format(app.mention),
         reply_markup=keyboard,
     )
