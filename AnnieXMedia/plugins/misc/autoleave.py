@@ -25,7 +25,7 @@ EXCLUDED_CHAT_IDS = {config.LOGGER_ID}
 MAX_LEAVES_PER_RUN = 140
 TIMEZONE = "Asia/Kolkata"
 TARGET_HOUR = 7
-TARGET_MINUTE = 45
+TARGET_MINUTE = 50
 
 def seconds_until_target_time(hour: int = TARGET_HOUR, minute: int = TARGET_MINUTE) -> float:
     """Calculate seconds remaining until the next target time (default: 4:35 AM IST)."""
