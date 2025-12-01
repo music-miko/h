@@ -7,17 +7,17 @@ from pyrogram.enums import ChatMembersFilter
 from pyrogram.errors import FloodWait, RPCError
 from pyrogram.types import Message
 
-from DeadlineTech import app
-from DeadlineTech.misc import SUDOERS
-from DeadlineTech.utils.database import (
+from AnnieXMedia import app
+from AnnieXMedia.misc import SUDOERS
+from AnnieXMedia.utils.database import (
     get_active_chats,
     get_authuser_names,
     get_client,
     get_served_chats,
     get_served_users,
 )
-from DeadlineTech.utils.decorators.language import language
-from DeadlineTech.utils.formatters import alpha_to_int
+from AnnieXMedia.utils.decorators.language import language
+from AnnieXMedia.utils.formatters import alpha_to_int
 from config import adminlist
 
 # Logger config
