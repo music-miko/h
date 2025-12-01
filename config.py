@@ -51,7 +51,7 @@ SUPPORT_CHANNEL = getenv("SUPPORT_CHANNEL", "https://t.me/ArcUpdates")
 SUPPORT_CHAT = getenv("SUPPORT_CHAT", "https://t.me/ArcChatz")
 
 # ── Assistant auto-leave ───────────────────────────────────────────────────────
-AUTO_LEAVING_ASSISTANT = False
+AUTO_LEAVING_ASSISTANT = True
 AUTO_LEAVE_ASSISTANT_TIME = int(getenv("ASSISTANT_LEAVE_TIME", "3600"))
 
 # ── Debug ──────────────────────────────────────────────────────────────────────
