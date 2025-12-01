@@ -64,7 +64,7 @@ async def auto_leave():
         return
 
     logger.info("AutoLeave task started and running in background.")
-    from DeadlineTech.core.userbot import assistants
+    from AnnieXMedia.core.userbot import assistants
 
     while True:
         seconds_to_sleep = seconds_until_target_time()
