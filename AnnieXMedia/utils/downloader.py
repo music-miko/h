@@ -47,12 +47,29 @@ def extract_video_id(link: str) -> str:
 
 
 def get_cookie_file() -> Optional[str]:
+    """
+    Only return cookie file if it exists & looks like Netscape format.
+    Prevents yt-dlp from spamming 'does not look like a Netscape format cookies file'.
+    """
     try:
-        if _COOKIES_FILE and os.path.exists(_COOKIES_FILE) and os.path.getsize(_COOKIES_FILE) > 0:
+        if not _COOKIES_FILE:
+            return None
+        if not os.path.exists(_COOKIES_FILE) or os.path.getsize(_COOKIES_FILE) <= 0:
+            return None
+
+        with open(_COOKIES_FILE, "rb") as f:
+            header = f.read(256)
+
+        if b"Netscape HTTP Cookie File" in header:
             return _COOKIES_FILE
-    except Exception:
-        pass
-    return None
+
+        LOGGER.warning(
+            f"Cookie file '{_COOKIES_FILE}' exists but is not Netscape format. Ignoring it for yt-dlp."
+        )
+        return None
+    except Exception as e:
+        LOGGER.warning(f"Error while checking cookie file '{_COOKIES_FILE}': {e}")
+        return None
 
 
 def find_cached_file(video_id: str) -> Optional[str]:
@@ -208,7 +225,12 @@ async def _poll_download_api(
                 "ok",
             }
 
-            if status in in_progress_statuses or (not status and not data.get("link") and not data.get("url") and not data.get("download_url")):
+            if status in in_progress_statuses or (
+                not status
+                and not data.get("link")
+                and not data.get("url")
+                and not data.get("download_url")
+            ):
                 LOGGER.debug(
                     f"{media_type.capitalize()} API still processing {vid}: "
                     f"status='{status}' data={str(data)[:200]}"
@@ -319,17 +341,47 @@ def get_final_path_from_info(info: Dict) -> Optional[str]:
     return matches[0] if matches else None
 
 
+def normalize_ytdlp_link(link: str) -> str:
+    """
+    If `link` is not a valid URL or a direct YouTube ID, treat it as a search query.
+    This lets yt-dlp handle plain song names like 'i see slow ...'.
+    """
+    if not link:
+        return link
+
+    s = link.strip()
+
+    # Looks like a URL
+    if s.startswith(("http://", "https://")):
+        return s
+
+    # Looks like a YouTube ID
+    if YOUTUBE_ID_RE.match(s):
+        return s
+
+    # If it contains "youtu", it's probably a YouTube URL missing scheme
+    if "youtu" in s:
+        return "https://" + s if not s.startswith(("http://", "https://")) else s
+
+    # Otherwise, treat as search query
+    return f"ytsearch1:{s}"
+
+
 def download_with_ytdlp_sync(link: str, fmt: str) -> Optional[str]:
     try:
+        norm_link = normalize_ytdlp_link(link)
+
         opts = get_ytdlp_base_opts()
         opts["format"] = fmt
+
         with YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(link, download=False)
+            info = ydl.extract_info(norm_link, download=False)
             if path := get_final_path_from_info(info):
                 return path
-            ydl.download([link])
+            ydl.download([norm_link])
             return get_final_path_from_info(info)
-    except Exception:
+    except Exception as e:
+        LOGGER.error(f"yt-dlp download failed for link='{link}': {e}", exc_info=True)
         return None
 
 
@@ -356,35 +408,12 @@ async def deduplicate_download(key: str, runner):
             _inflight.pop(key, None)
 
 
-async def race_ytdlp_and_api(yt_task, api_task, title: str):
-    done, pending = await asyncio.wait(
-        {yt_task, api_task}, return_when=asyncio.FIRST_COMPLETED
-    )
-    for task in done:
-        result = task.result()
-        if result and os.path.exists(result):
-            source = "yt-dlp" if task is yt_task else "API"
-            log_download_source(title, source)
-            for p in pending:
-                p.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await p
-            return result
-    for task in pending:
-        try:
-            result = await task
-            if result and os.path.exists(result):
-                source = "yt-dlp" if task is yt_task else "API"
-                log_download_source(title, source)
-                return result
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass
-    return None
-
-
 async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str]:
+    """
+    Main entry:
+    - First try API (audio/video).
+    - If API fails → fall back to yt-dlp with cookies.
+    """
     loop = asyncio.get_running_loop()
     vid = extract_video_id(link)
     if cached := find_cached_file(vid):
@@ -392,59 +421,63 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
             LOGGER.info(f"Track '{title}' - Served from cache")
         return cached
 
+    # AUDIO MODE
     if type == "audio":
         key = f"audio:{link}"
 
         async def run():
-            ytdlp_task = asyncio.create_task(
-                run_with_semaphore(
-                    loop.run_in_executor(
-                        None,
-                        download_with_ytdlp_sync,
-                        link,
-                        "bestaudio[ext=webm][acodec=opus]",
-                    )
+            # 1) Try API first
+            if USE_AUDIO_API:
+                api_result = await api_download_audio(link)
+                if api_result and os.path.exists(api_result):
+                    log_download_source(title or "Unknown", "API")
+                    return api_result
+
+            # 2) Fallback to yt-dlp with cookies
+            ytdlp_result = await run_with_semaphore(
+                loop.run_in_executor(
+                    None,
+                    download_with_ytdlp_sync,
+                    link,
+                    "bestaudio[ext=webm][acodec=opus]",
                 )
             )
-            api_task = (
-                asyncio.create_task(api_download_audio(link))
-                if USE_AUDIO_API
-                else None
-            )
-            if api_task:
-                return await race_ytdlp_and_api(ytdlp_task, api_task, title or "Unknown")
-            result = await ytdlp_task
-            if result and title:
-                log_download_source(title, "yt-dlp")
-            return result
+            if ytdlp_result and os.path.exists(ytdlp_result):
+                if title:
+                    log_download_source(title, "yt-dlp")
+                return ytdlp_result
+
+            return None
 
         return await deduplicate_download(key, run)
 
+    # VIDEO MODE
     elif type == "video":
         key = f"video:{link}"
 
         async def run():
-            ytdlp_task = asyncio.create_task(
-                run_with_semaphore(
-                    loop.run_in_executor(
-                        None,
-                        download_with_ytdlp_sync,
-                        link,
-                        "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)",
-                    )
+            # 1) Try API first
+            if USE_VIDEO_API:
+                api_result = await api_download_video(link)
+                if api_result and os.path.exists(api_result):
+                    log_download_source(title or "Unknown", "API")
+                    return api_result
+
+            # 2) Fallback to yt-dlp with cookies
+            ytdlp_result = await run_with_semaphore(
+                loop.run_in_executor(
+                    None,
+                    download_with_ytdlp_sync,
+                    link,
+                    "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)",
                 )
             )
-            api_task = (
-                asyncio.create_task(api_download_video(link))
-                if USE_VIDEO_API
-                else None
-            )
-            if api_task:
-                return await race_ytdlp_and_api(ytdlp_task, api_task, title or "Unknown")
-            result = await ytdlp_task
-            if result and title:
-                log_download_source(title, "yt-dlp")
-            return result
+            if ytdlp_result and os.path.exists(ytdlp_result):
+                if title:
+                    log_download_source(title, "yt-dlp")
+                return ytdlp_result
+
+            return None
 
         return await deduplicate_download(key, run)
 
