@@ -17,6 +17,7 @@ OWNER_USERNAME = getenv("OWNER_USERNAME", "its_damiann")
 BOT_USERNAME = getenv("BOT_USERNAME", "Maddy_MusicBot")
 BOT_NAME = getenv("BOT_NAME", "˹ ᴍᴀᴅᴅʏ ✘ 𝙼ᴜsɪᴄ˼ ♪")
 ASSUSERNAME = getenv("ASSUSERNAME", "HDjskjdjdhs")
+DB_NAME = getenv("DB_NAME")
 
 # ── Database & logging ─────────────────────────────────────────────────────────
 MONGO_DB_URI = getenv("MONGO_DB_URI")
