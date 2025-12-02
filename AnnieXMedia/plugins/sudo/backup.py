@@ -11,11 +11,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from AnnieXMedia import app
-from config import MONGO_DB_URI, OWNER_ID
+from config import MONGO_DB_URI, OWNER_ID, DB_NAME
 from AnnieXMedia.logging import LOGGER
 from AnnieXMedia.core.dir import BACKUP_DIR
 
-DB_NAME = "arc"
 TEMP_DIR = os.path.join(BACKUP_DIR, "tmp")
 LOGGER_ID = -1003302898507
 
