@@ -68,7 +68,7 @@ async def _create_backup_zip() -> str:
         for root, _, files in os.walk(TEMP_DIR):
             for file in files:
                 fp = os.path.join(root, file)
-                arc = os.path.join("Annie", os.path.relpath(fp, TEMP_DIR))
+                arc = os.path.join(DB_NAME, os.path.relpath(fp, TEMP_DIR))
                 zf.write(fp, arc)
 
     shutil.rmtree(TEMP_DIR)
