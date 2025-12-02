@@ -1,4 +1,4 @@
-﻿# Authored By Certified Coders © 2025
+# Authored By Certified Coders © 2025
 import asyncio
 import contextlib
 import glob
@@ -81,7 +81,7 @@ def get_ytdlp_base_opts() -> Dict[str, object]:
         "fragment_retries": 1,
         "cachedir": str(CACHE_DIR),
         "ignoreerrors": True,
-        "merge_output_format": "mp4"
+        "merge_output_format": "mp4",
     }
     if cookiefile := get_cookie_file():
         opts["cookiefile"] = cookiefile
@@ -116,71 +116,190 @@ async def download_file(url: str, out_path: str) -> Optional[str]:
         session = await get_http_session()
         async with session.get(url) as resp:
             if resp.status != 200:
+                LOGGER.warning(f"API file download failed with status {resp.status} for URL: {url}")
                 return None
             async with aiofiles.open(out_path, "wb") as f:
                 async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
                     if not chunk:
                         break
                     await f.write(chunk)
-        return out_path if os.path.exists(out_path) else None
-    except Exception:
+        if os.path.exists(out_path):
+            return out_path
+        LOGGER.warning(f"Download finished but file not found on disk: {out_path}")
+        return None
+    except Exception as e:
+        LOGGER.error(f"Exception while downloading file from API: {e}", exc_info=True)
+        return None
+
+
+async def _poll_download_api(
+    poll_url: str,
+    vid: str,
+    default_ext: str,
+    is_video: bool,
+    max_wait: float = 180.0,
+    poll_interval: float = 1.5,
+) -> Optional[str]:
+    """
+    Generic polling helper for audio/video API.
+
+    - Accepts multiple 'in-progress' and 'success' status values.
+    - Stops after max_wait seconds.
+    - Tries several common keys for URL / format / filename.
+    """
+    media_type = "video" if is_video else "audio"
+
+    try:
+        session = await get_http_session()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max_wait
+
+        while True:
+            if loop.time() > deadline:
+                LOGGER.warning(f"{media_type.capitalize()} API poll timeout for {vid}")
+                return None
+
+            try:
+                async with session.get(poll_url) as r:
+                    if r.status != 200:
+                        text = await r.text()
+                        LOGGER.warning(
+                            f"{media_type.capitalize()} API returned "
+                            f"HTTP {r.status} for {vid}. Body: {text[:200]}"
+                        )
+                        await asyncio.sleep(poll_interval)
+                        continue
+
+                    data = await r.json()
+            except Exception as e:
+                LOGGER.error(
+                    f"Error while calling {media_type} API for {vid}: {e}",
+                    exc_info=True,
+                )
+                await asyncio.sleep(poll_interval)
+                continue
+
+            # Try to read a status field in a flexible way
+            raw_status = (
+                data.get("status")
+                or data.get("state")
+                or data.get("result")
+                or data.get("phase")
+            )
+            status = str(raw_status).lower() if raw_status is not None else ""
+
+            # Values that mean it's still working
+            in_progress_statuses = {
+                "downloading",
+                "processing",
+                "pending",
+                "queued",
+                "working",
+                "busy",
+                "start",
+            }
+
+            # Values that mean it's done / success
+            success_statuses = {
+                "done",
+                "finished",
+                "completed",
+                "success",
+                "ok",
+            }
+
+            if status in in_progress_statuses or (not status and not data.get("link") and not data.get("url") and not data.get("download_url")):
+                LOGGER.debug(
+                    f"{media_type.capitalize()} API still processing {vid}: "
+                    f"status='{status}' data={str(data)[:200]}"
+                )
+                await asyncio.sleep(poll_interval)
+                continue
+
+            if status not in success_statuses:
+                LOGGER.warning(
+                    f"{media_type.capitalize()} API returned terminal status for {vid}: "
+                    f"status='{status}' data={str(data)[:200]}"
+                )
+                return None
+
+            # Try several possible keys for the download URL
+            dl_url = data.get("link") or data.get("url") or data.get("download_url")
+            if not dl_url:
+                LOGGER.warning(
+                    f"{media_type.capitalize()} API indicated success but no download URL for {vid}. "
+                    f"Data: {str(data)[:200]}"
+                )
+                return None
+
+            # Try to determine extension
+            fmt_raw = data.get("format") or data.get("ext") or default_ext
+            fmt = str(fmt_raw).split("/")[-1].strip().lower() if fmt_raw else default_ext
+            if not fmt:
+                fmt = default_ext
+
+            # Try to use provided filename if exists
+            filename = data.get("filename") or data.get("file_name")
+            if filename:
+                safe_name = os.path.basename(str(filename))
+                out_path = os.path.join(DOWNLOAD_DIR, safe_name)
+            else:
+                out_path = os.path.join(DOWNLOAD_DIR, f"{vid}.{fmt}")
+
+            LOGGER.info(
+                f"{media_type.capitalize()} API ready for {vid}, downloading to '{out_path}' "
+                f"with format '{fmt}'"
+            )
+            return await download_file(dl_url, out_path)
+
+    except Exception as e:
+        LOGGER.error(
+            f"Unexpected exception in {media_type} API polling for {vid}: {e}",
+            exc_info=True,
+        )
         return None
 
 
 async def api_download_audio(link: str) -> Optional[str]:
     if not USE_AUDIO_API:
         return None
+
     vid = extract_video_id(link)
     if not vid:
+        LOGGER.warning(f"api_download_audio: could not extract video id from link: {link}")
         return None
-    poll_url = f"{API_URL}/song/{vid}?api={API_KEY}"
-    try:
-        session = await get_http_session()
-        while True:
-            async with session.get(poll_url) as r:
-                if r.status != 200:
-                    return None
-                data = await r.json()
-                status = str(data.get("status", "")).lower()
-                if status == "downloading":
-                    await asyncio.sleep(1.0)
-                    continue
-                if status != "done":
-                    return None
-                dl_url = data.get("link")
-                fmt = data.get("format", "webm")
-                out_path = f"{DOWNLOAD_DIR}/{vid}.{fmt}"
-                return await download_file(dl_url, out_path)
-    except Exception:
-        return None
+
+    base = API_URL.rstrip("/")
+    poll_url = f"{base}/song/{vid}?api={API_KEY}"
+
+    LOGGER.info(f"Starting audio API download for {vid} with URL: {poll_url}")
+    return await _poll_download_api(
+        poll_url=poll_url,
+        vid=vid,
+        default_ext="webm",
+        is_video=False,
+    )
 
 
 async def api_download_video(link: str) -> Optional[str]:
     if not USE_VIDEO_API:
         return None
+
     vid = extract_video_id(link)
     if not vid:
+        LOGGER.warning(f"api_download_video: could not extract video id from link: {link}")
         return None
-    poll_url = f"{VIDEO_API_URL}/video/{vid}?api={API_KEY}"
-    try:
-        session = await get_http_session()
-        while True:
-            async with session.get(poll_url) as r:
-                if r.status != 200:
-                    return None
-                data = await r.json()
-                status = str(data.get("status", "")).lower()
-                if status == "downloading":
-                    await asyncio.sleep(1.0)
-                    continue
-                if status != "done":
-                    return None
-                dl_url = data.get("link")
-                fmt = data.get("format", "mp4")
-                out_path = f"{DOWNLOAD_DIR}/{vid}.{fmt}"
-                return await download_file(dl_url, out_path)
-    except Exception:
-        return None
+
+    base = VIDEO_API_URL.rstrip("/")
+    poll_url = f"{base}/video/{vid}?api={API_KEY}"
+
+    LOGGER.info(f"Starting video API download for {vid} with URL: {poll_url}")
+    return await _poll_download_api(
+        poll_url=poll_url,
+        vid=vid,
+        default_ext="mp4",
+        is_video=True,
+    )
 
 
 def get_final_path_from_info(info: Dict) -> Optional[str]:
@@ -279,10 +398,19 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
         async def run():
             ytdlp_task = asyncio.create_task(
                 run_with_semaphore(
-                    loop.run_in_executor(None, download_with_ytdlp_sync, link, "bestaudio[ext=webm][acodec=opus]")
+                    loop.run_in_executor(
+                        None,
+                        download_with_ytdlp_sync,
+                        link,
+                        "bestaudio[ext=webm][acodec=opus]",
+                    )
                 )
             )
-            api_task = asyncio.create_task(api_download_audio(link)) if USE_AUDIO_API else None
+            api_task = (
+                asyncio.create_task(api_download_audio(link))
+                if USE_AUDIO_API
+                else None
+            )
             if api_task:
                 return await race_ytdlp_and_api(ytdlp_task, api_task, title or "Unknown")
             result = await ytdlp_task
@@ -298,10 +426,19 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
         async def run():
             ytdlp_task = asyncio.create_task(
                 run_with_semaphore(
-                    loop.run_in_executor(None, download_with_ytdlp_sync, link, "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)")
+                    loop.run_in_executor(
+                        None,
+                        download_with_ytdlp_sync,
+                        link,
+                        "(bestvideo[height<=?720][width<=?1280][ext=mp4])+(bestaudio)",
+                    )
                 )
             )
-            api_task = asyncio.create_task(api_download_video(link)) if USE_VIDEO_API else None
+            api_task = (
+                asyncio.create_task(api_download_video(link))
+                if USE_VIDEO_API
+                else None
+            )
             if api_task:
                 return await race_ytdlp_and_api(ytdlp_task, api_task, title or "Unknown")
             result = await ytdlp_task
