@@ -6,7 +6,7 @@ BASE_DIR = os.getcwd()
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
 COUPLE_DIR = os.path.join(BASE_DIR, "couples")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
-BACKUP_DIR = os.path.join(BASE_DIR, "AnnieXMediaBackup")
+BACKUP_DIR = os.path.join(BASE_DIR, "arc")
 
 def StorageManager():
 
