@@ -343,22 +343,31 @@ async def api_download_video(link: str) -> Optional[str]:
     )
 
 
-def get_final_path_from_info(info: Dict) -> Optional[str]:
+def get_final_path_from_info(info: Optional[Dict]) -> Optional[str]:
+    """
+    Given yt-dlp's extracted info dict, try to locate the final downloaded file.
+
+    Returns None safely if info is None or does not contain an 'id' field.
+    """
+    if not info:
+        return None
+
     vid = info.get("id")
     if not vid:
         return None
+
     ext = info.get("ext")
     if ext:
         p = os.path.join(DOWNLOAD_DIR, f"{vid}.{ext}")
         if os.path.exists(p):
             return p
+
     matches = sorted(
         glob.glob(os.path.join(DOWNLOAD_DIR, f"{vid}.*")),
         key=os.path.getmtime,
         reverse=True,
     )
     return matches[0] if matches else None
-
 
 def normalize_ytdlp_link(link: str) -> str:
     """
