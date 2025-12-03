@@ -21,10 +21,12 @@ LOGGER = LOGGER(__name__)
 
 USE_AUDIO_API = bool(API_URL and API_KEY)
 USE_VIDEO_API = bool(VIDEO_API_URL and API_KEY)
+
 _inflight: Dict[str, asyncio.Future] = {}
 _inflight_lock = asyncio.Lock()
 _session: Optional[aiohttp.ClientSession] = None
 _session_lock = asyncio.Lock()
+
 YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 
 
@@ -72,13 +74,30 @@ def get_cookie_file() -> Optional[str]:
         return None
 
 
-def find_cached_file(video_id: str) -> Optional[str]:
+def find_cached_file(video_id: str, media_type: Optional[str] = None) -> Optional[str]:
+    """
+    Look for a cached file for this video id.
+
+    - For audio: accept audio-type extensions (webm audio, mp3, m4a, etc.).
+    - For video: only accept video containers we know we use for video (mp4, mkv).
+      This avoids using an audio-only .webm as a 'video' file and breaking pytgcalls.
+    """
     if not video_id:
         return None
-    for ext in ("mp3", "m4a", "webm", "mp4", "mkv"):
-        path = f"{DOWNLOAD_DIR}/{video_id}.{ext}"
+
+    if media_type == "video":
+        exts = ("mp4", "mkv")
+    elif media_type == "audio":
+        exts = ("mp3", "m4a", "webm", "opus", "ogg")
+    else:
+        # Generic fallback if called without type
+        exts = ("mp3", "m4a", "webm", "mp4", "mkv", "opus", "ogg")
+
+    for ext in exts:
+        path = os.path.join(DOWNLOAD_DIR, f"{video_id}.{ext}")
         if os.path.exists(path):
             return path
+
     return None
 
 
@@ -330,11 +349,11 @@ def get_final_path_from_info(info: Dict) -> Optional[str]:
         return None
     ext = info.get("ext")
     if ext:
-        p = f"{DOWNLOAD_DIR}/{vid}.{ext}"
+        p = os.path.join(DOWNLOAD_DIR, f"{vid}.{ext}")
         if os.path.exists(p):
             return p
     matches = sorted(
-        glob.glob(f"{DOWNLOAD_DIR}/{vid}.*"),
+        glob.glob(os.path.join(DOWNLOAD_DIR, f"{vid}.*")),
         key=os.path.getmtime,
         reverse=True,
     )
@@ -361,7 +380,9 @@ def normalize_ytdlp_link(link: str) -> str:
 
     # If it contains "youtu", it's probably a YouTube URL missing scheme
     if "youtu" in s:
-        return "https://" + s if not s.startswith(("http://", "https://")) else s
+        if s.startswith(("http://", "https://")):
+            return s
+        return "https://" + s
 
     # Otherwise, treat as search query
     return f"ytsearch1:{s}"
@@ -411,14 +432,20 @@ async def deduplicate_download(key: str, runner):
 async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str]:
     """
     Main entry:
-    - First try API (audio/video).
+    - First try API (audio/video) if enabled.
     - If API fails → fall back to yt-dlp with cookies.
+    - Uses type-aware cache to avoid using audio file for video, etc.
     """
     loop = asyncio.get_running_loop()
     vid = extract_video_id(link)
-    if cached := find_cached_file(vid):
+
+    # Type-aware cache lookup
+    if cached := find_cached_file(vid, type):
         if title:
-            LOGGER.info(f"Track '{title}' - Served from cache")
+            LOGGER.info(
+                f"Track '{title}' - Served from cache "
+                f"({'video' if type == 'video' else 'audio'})"
+            )
         return cached
 
     # AUDIO MODE
