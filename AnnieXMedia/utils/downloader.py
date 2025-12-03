@@ -19,6 +19,9 @@ from AnnieXMedia.logging import LOGGER
 
 LOGGER = LOGGER(__name__)
 
+# We treat:
+#   API_URL      -> base "https://deadlinetech.site"
+#   VIDEO_API_URL -> just a toggle; real endpoint is same /song/{video_id}
 USE_AUDIO_API = bool(API_URL and API_KEY)
 USE_VIDEO_API = bool(VIDEO_API_URL and API_KEY)
 
@@ -90,7 +93,6 @@ def find_cached_file(video_id: str, media_type: Optional[str] = None) -> Optiona
     elif media_type == "audio":
         exts = ("mp3", "m4a", "webm", "opus", "ogg")
     else:
-        # Generic fallback if called without type
         exts = ("mp3", "m4a", "webm", "mp4", "mkv", "opus", "ogg")
 
     for ext in exts:
@@ -168,187 +170,165 @@ async def download_file(url: str, out_path: str) -> Optional[str]:
         return None
 
 
-async def _poll_download_api(
-    poll_url: str,
-    vid: str,
-    default_ext: str,
-    is_video: bool,
-    max_wait: float = 180.0,
-    poll_interval: float = 1.5,
-) -> Optional[str]:
-    """
-    Generic polling helper for audio/video API.
+# ============== Deadlinetech.site API integration ==============
 
-    - Accepts multiple 'in-progress' and 'success' status values.
-    - Stops after max_wait seconds.
-    - Tries several common keys for URL / format / filename.
+async def _deadlinetech_download(link: str, media_type: str) -> Optional[str]:
     """
-    media_type = "video" if is_video else "audio"
+    Call Deadlinetech song endpoint:
+
+        GET {API_URL}/song/{video_id}?media_type=audio|video&api_key=...
+
+    Handles BOTH:
+      1) JSON response (like merged_api.py) :
+           { "status": "done", "file_path": "...", "ext": "m4a/mp4", ... }
+
+      2) Direct binary audio/video response:
+           Content-Type: audio/* or video/* or application/octet-stream
+
+    Returns final LOCAL path inside DOWNLOAD_DIR (downloader.py's server).
+    """
+    if not API_URL or not API_KEY:
+        return None
+
+    vid = extract_video_id(link)
+    if not vid:
+        # If no valid ID, don't break — caller will fall back to yt-dlp.
+        LOGGER.warning(f"_deadlinetech_download: could not extract video id from link: {link}")
+        return None
+
+    base = API_URL.rstrip("/")
+    url = f"{base}/song/{vid}"
+    params = {"media_type": media_type, "api_key": API_KEY}
 
     try:
         session = await get_http_session()
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + max_wait
-
-        while True:
-            if loop.time() > deadline:
-                LOGGER.warning(f"{media_type.capitalize()} API poll timeout for {vid}")
-                return None
-
-            try:
-                async with session.get(poll_url) as r:
-                    if r.status != 200:
-                        text = await r.text()
-                        LOGGER.warning(
-                            f"{media_type.capitalize()} API returned "
-                            f"HTTP {r.status} for {vid}. Body: {text[:200]}"
-                        )
-                        await asyncio.sleep(poll_interval)
-                        continue
-
-                    data = await r.json()
-            except Exception as e:
-                LOGGER.error(
-                    f"Error while calling {media_type} API for {vid}: {e}",
-                    exc_info=True,
-                )
-                await asyncio.sleep(poll_interval)
-                continue
-
-            # Try to read a status field in a flexible way
-            raw_status = (
-                data.get("status")
-                or data.get("state")
-                or data.get("result")
-                or data.get("phase")
-            )
-            status = str(raw_status).lower() if raw_status is not None else ""
-
-            # Values that mean it's still working
-            in_progress_statuses = {
-                "downloading",
-                "processing",
-                "pending",
-                "queued",
-                "working",
-                "busy",
-                "start",
-            }
-
-            # Values that mean it's done / success
-            success_statuses = {
-                "done",
-                "finished",
-                "completed",
-                "success",
-                "ok",
-            }
-
-            if status in in_progress_statuses or (
-                not status
-                and not data.get("link")
-                and not data.get("url")
-                and not data.get("download_url")
-            ):
-                LOGGER.debug(
-                    f"{media_type.capitalize()} API still processing {vid}: "
-                    f"status='{status}' data={str(data)[:200]}"
-                )
-                await asyncio.sleep(poll_interval)
-                continue
-
-            if status not in success_statuses:
+        LOGGER.info(f"Deadlinetech API {media_type} request: {url} params={params}")
+        async with session.get(url, params=params) as resp:
+            if resp.status != 200:
+                text = await resp.text()
                 LOGGER.warning(
-                    f"{media_type.capitalize()} API returned terminal status for {vid}: "
-                    f"status='{status}' data={str(data)[:200]}"
+                    f"Deadlinetech API returned HTTP {resp.status} for {vid}. "
+                    f"Body: {text[:200]}"
                 )
                 return None
 
-            # Try several possible keys for the download URL
-            dl_url = data.get("link") or data.get("url") or data.get("download_url")
-            if not dl_url:
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+
+            # ---- Case 1: JSON API (merged_api style) ----
+            if "application/json" in content_type or "text/json" in content_type:
+                try:
+                    data = await resp.json()
+                except Exception as e:
+                    LOGGER.error(f"Deadlinetech JSON parse error for {vid}: {e}", exc_info=True)
+                    return None
+
+                status = str(data.get("status", "")).lower()
+                # Accept typical success statuses, or allow empty
+                if status and status not in {"done", "success", "ok", "completed", "finished"}:
+                    LOGGER.warning(
+                        f"Deadlinetech JSON non-success status for {vid}: "
+                        f"status='{status}' data={str(data)[:200]}"
+                    )
+                    return None
+
+                file_path = (
+                    data.get("file_path")
+                    or data.get("path")
+                    or data.get("file")
+                    or data.get("local_path")
+                )
+
+                if not file_path:
+                    LOGGER.warning(
+                        f"Deadlinetech JSON response missing file_path for {vid}: {str(data)[:200]}"
+                    )
+                    return None
+
+                # If API gives HTTP URL in JSON, download it to our server.
+                if str(file_path).startswith(("http://", "https://")):
+                    ext = data.get("ext") or ("mp4" if media_type == "video" else "m4a")
+                    ext = str(ext).split("/")[-1].lower() if ext else (
+                        "mp4" if media_type == "video" else "m4a"
+                    )
+                    out_path = os.path.join(DOWNLOAD_DIR, f"{vid}.{ext}")
+                    LOGGER.info(
+                        f"Deadlinetech JSON returned remote URL for {vid}, downloading to {out_path}"
+                    )
+                    return await download_file(file_path, out_path)
+
+                # Local filesystem path (same machine)
+                local_path = str(file_path)
+
+                # If not absolute, resolve relative to DOWNLOAD_DIR
+                if not os.path.isabs(local_path):
+                    candidate = os.path.join(DOWNLOAD_DIR, os.path.basename(local_path))
+                    if os.path.exists(candidate):
+                        return candidate
+
+                if os.path.exists(local_path):
+                    return local_path
+
                 LOGGER.warning(
-                    f"{media_type.capitalize()} API indicated success but no download URL for {vid}. "
-                    f"Data: {str(data)[:200]}"
+                    f"Deadlinetech JSON file_path does not exist on disk for {vid}: {local_path}"
                 )
                 return None
 
-            # Try to determine extension
-            fmt_raw = data.get("format") or data.get("ext") or default_ext
-            fmt = str(fmt_raw).split("/")[-1].strip().lower() if fmt_raw else default_ext
-            if not fmt:
-                fmt = default_ext
-
-            # Try to use provided filename if exists
-            filename = data.get("filename") or data.get("file_name")
-            if filename:
-                safe_name = os.path.basename(str(filename))
-                out_path = os.path.join(DOWNLOAD_DIR, safe_name)
+            # ---- Case 2: Direct binary stream ----
+            # Decide extension from content-type or media_type
+            if "audio" in content_type:
+                ext = "m4a" if "mpeg" in content_type or "mp4" in content_type else "webm"
+            elif "video" in content_type:
+                ext = "mp4" if "mp4" in content_type or "x-m4v" in content_type else "mkv"
             else:
-                out_path = os.path.join(DOWNLOAD_DIR, f"{vid}.{fmt}")
+                # Fallback: guess from requested media_type
+                ext = "mp4" if media_type == "video" else "m4a"
 
+            out_path = os.path.join(DOWNLOAD_DIR, f"{vid}.{ext}")
             LOGGER.info(
-                f"{media_type.capitalize()} API ready for {vid}, downloading to '{out_path}' "
-                f"with format '{fmt}'"
+                f"Deadlinetech binary response for {vid} ({media_type}), writing to {out_path}"
             )
-            return await download_file(dl_url, out_path)
+
+            async with aiofiles.open(out_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
+                    if not chunk:
+                        break
+                    await f.write(chunk)
+
+            if os.path.exists(out_path):
+                return out_path
+
+            LOGGER.warning(
+                f"Deadlinetech binary download finished but file not found for {vid}: {out_path}"
+            )
+            return None
 
     except Exception as e:
-        LOGGER.error(
-            f"Unexpected exception in {media_type} API polling for {vid}: {e}",
-            exc_info=True,
-        )
+        LOGGER.error(f"Deadlinetech API error for {vid}: {e}", exc_info=True)
         return None
 
 
 async def api_download_audio(link: str) -> Optional[str]:
+    """
+    Audio download using Deadlinetech.site merged API.
+    """
     if not USE_AUDIO_API:
         return None
-
-    vid = extract_video_id(link)
-    if not vid:
-        LOGGER.warning(f"api_download_audio: could not extract video id from link: {link}")
-        return None
-
-    base = API_URL.rstrip("/")
-    poll_url = f"{base}/song/{vid}?api={API_KEY}"
-
-    LOGGER.info(f"Starting audio API download for {vid} with URL: {poll_url}")
-    return await _poll_download_api(
-        poll_url=poll_url,
-        vid=vid,
-        default_ext="webm",
-        is_video=False,
-    )
+    return await _deadlinetech_download(link, media_type="audio")
 
 
 async def api_download_video(link: str) -> Optional[str]:
-    if not USE_VIDEO_API:
+    """
+    Video download using Deadlinetech.site merged API.
+    VIDEO_API_URL is used as a toggle, but the endpoint is the same /song/{vid}?media_type=video.
+    """
+    if not (USE_VIDEO_API or USE_AUDIO_API):
         return None
+    return await _deadlinetech_download(link, media_type="video")
 
-    vid = extract_video_id(link)
-    if not vid:
-        LOGGER.warning(f"api_download_video: could not extract video id from link: {link}")
-        return None
 
-    base = VIDEO_API_URL.rstrip("/")
-    poll_url = f"{base}/video/{vid}?api={API_KEY}"
-
-    LOGGER.info(f"Starting video API download for {vid} with URL: {poll_url}")
-    return await _poll_download_api(
-        poll_url=poll_url,
-        vid=vid,
-        default_ext="mp4",
-        is_video=True,
-    )
-
+# ============== yt-dlp helpers & fallbacks ==============
 
 def get_final_path_from_info(info: Optional[Dict]) -> Optional[str]:
-    """
-    Given yt-dlp's extracted info dict, try to locate the final downloaded file.
-
-    Returns None safely if info is None or does not contain an 'id' field.
-    """
     if not info:
         return None
 
@@ -369,38 +349,33 @@ def get_final_path_from_info(info: Optional[Dict]) -> Optional[str]:
     )
     return matches[0] if matches else None
 
+
 def normalize_ytdlp_link(link: str) -> str:
     """
     If `link` is not a valid URL or a direct YouTube ID, treat it as a search query.
-    This lets yt-dlp handle plain song names like 'i see slow ...'.
     """
     if not link:
         return link
 
     s = link.strip()
 
-    # Looks like a URL
     if s.startswith(("http://", "https://")):
         return s
 
-    # Looks like a YouTube ID
     if YOUTUBE_ID_RE.match(s):
         return s
 
-    # If it contains "youtu", it's probably a YouTube URL missing scheme
     if "youtu" in s:
         if s.startswith(("http://", "https://")):
             return s
         return "https://" + s
 
-    # Otherwise, treat as search query
     return f"ytsearch1:{s}"
 
 
 def download_with_ytdlp_sync(link: str, fmt: str) -> Optional[str]:
     try:
         norm_link = normalize_ytdlp_link(link)
-
         opts = get_ytdlp_base_opts()
         opts["format"] = fmt
 
@@ -441,9 +416,10 @@ async def deduplicate_download(key: str, runner):
 async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str]:
     """
     Main entry:
-    - First try API (audio/video) if enabled.
-    - If API fails → fall back to yt-dlp with cookies.
-    - Uses type-aware cache to avoid using audio file for video, etc.
+
+    1) Try Deadlinetech API (audio/video) if enabled.
+    2) If API fails OR returns invalid data → fall back to yt-dlp.
+    3) Uses type-aware cache to avoid using audio file for video, etc.
     """
     loop = asyncio.get_running_loop()
     vid = extract_video_id(link)
@@ -457,19 +433,19 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
             )
         return cached
 
-    # AUDIO MODE
+    # AUDIO
     if type == "audio":
         key = f"audio:{link}"
 
         async def run():
-            # 1) Try API first
+            # 1) Try API
             if USE_AUDIO_API:
                 api_result = await api_download_audio(link)
                 if api_result and os.path.exists(api_result):
                     log_download_source(title or "Unknown", "API")
                     return api_result
 
-            # 2) Fallback to yt-dlp with cookies
+            # 2) Fallback yt-dlp
             ytdlp_result = await run_with_semaphore(
                 loop.run_in_executor(
                     None,
@@ -487,19 +463,19 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
 
         return await deduplicate_download(key, run)
 
-    # VIDEO MODE
+    # VIDEO
     elif type == "video":
         key = f"video:{link}"
 
         async def run():
-            # 1) Try API first
-            if USE_VIDEO_API:
+            # 1) Try API
+            if USE_VIDEO_API or USE_AUDIO_API:
                 api_result = await api_download_video(link)
                 if api_result and os.path.exists(api_result):
                     log_download_source(title or "Unknown", "API")
                     return api_result
 
-            # 2) Fallback to yt-dlp with cookies
+            # 2) Fallback yt-dlp
             ytdlp_result = await run_with_semaphore(
                 loop.run_in_executor(
                     None,
