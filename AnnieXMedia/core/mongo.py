@@ -7,8 +7,8 @@ LOGGER(__name__).info("Connecting to your Mongo Database...")
 
 try:
     _mongo_async_ = AsyncIOMotorClient(MONGO_DB_URI, serverSelectionTimeoutMS=12500)
-    mongodb = _mongo_async_.Yukki
-    LOGGER(__name__).info("Connected to your Mongo Database.")
+    mongodb = _mongo_async_[DB_NAME]  # ✅ Use DB_NAME dynamically
+    LOGGER(__name__).info(f"Connected to MongoDB database: {DB_NAME}")
 except Exception as e:
     LOGGER(__name__).error(f"Failed to connect to your Mongo Database: {e}")
     exit()
