@@ -1,4 +1,4 @@
-﻿# Authored By Certified Coders © 2025
+# Authored By Certified Coders © 2025
 import asyncio
 import contextlib
 import json
@@ -13,7 +13,6 @@ from pyrogram.types import Message
 from youtubesearchpython.__future__ import VideosSearch, Playlist
 
 from AnnieXMedia.utils.cookie_handler import COOKIE_PATH
-from AnnieXMedia.utils.database import is_on_off
 from AnnieXMedia.utils.downloader import yt_dlp_download
 from AnnieXMedia.utils.errors import capture_internal_err
 from AnnieXMedia.utils.formatters import time_to_seconds
@@ -33,13 +32,24 @@ YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 
 # === Helpers ===
 def _cookiefile_path() -> Optional[str]:
+    """
+    Return COOKIE_PATH only if it exists, non-empty and looks like Netscape format.
+    Avoids yt-dlp complaining about invalid cookies.txt.
+    """
     path = str(COOKIE_PATH)
     try:
-        if path and os.path.exists(path) and os.path.getsize(path) > 0:
+        if not path or not os.path.exists(path) or os.path.getsize(path) <= 0:
+            return None
+
+        with open(path, "rb") as f:
+            header = f.read(256)
+
+        # Netscape-style cookie files contain this header line
+        if b"Netscape HTTP Cookie File" in header:
             return path
+        return None
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _cookies_args() -> List[str]:
@@ -211,8 +221,13 @@ class YouTubeAPI:
                     f"for query/URL: '{prepared_link}'"
                 )
         except Exception as search_err:
+            # Fallback: use yt-dlp directly; if it's not a URL, use ytsearch1:query
+            yt_link = prepared_link
+            if not yt_link.startswith("http"):
+                yt_link = f"ytsearch1:{prepared_link}"
+
             stdout, stderr = await _exec_proc(
-                "yt-dlp", *(_cookies_args()), "--dump-json", "--no-warnings", prepared_link
+                "yt-dlp", *(_cookies_args()), "--dump-json", "--no-warnings", yt_link
             )
 
             def _both_failed(details: str) -> ValueError:
@@ -375,30 +390,29 @@ class YouTubeAPI:
         video: Union[bool, str, None] = None,
         videoid: Union[str, bool, None] = None,
     ) -> Union[Tuple[str, Optional[bool]], Tuple[None, None]]:
+        """
+        Unified download logic:
+        - AUDIO: always uses yt_dlp_download(type="audio") → returns (path, True) or (None, None)
+        - VIDEO (non-live): always uses yt_dlp_download(type="video") → returns (path, True) or (None, None)
+        - VIDEO (live): uses direct streaming URL via self.video()
+        """
         link = self._prepare_link(link, videoid)
 
+        # === VIDEO MODE ===
         if video:
+            # Live streams: must use stream URL
             if await self.is_live(link):
                 status, stream_url = await self.video(link)
                 if status == 1:
                     return stream_url, None
                 return None, None
 
-            if await is_on_off(1):
-                p = await yt_dlp_download(link, type="video", title=await self.title(link))
-                return (p, True) if p else (None, None)
+            # Non-live video: download file via unified downloader (API → yt-dlp)
+            title = await self.title(link)
+            p = await yt_dlp_download(link, type="video", title=title)
+            return (p, True) if p else (None, None)
 
-            stdout, _ = await _exec_proc(
-                "yt-dlp",
-                *(_cookies_args()),
-                "-g",
-                "-f",
-                "best[height<=?720][width<=?1280]",
-                link,
-            )
-            if stdout:
-                return stdout.decode().split("\n")[0], None
-            return None, None
-
-        p = await yt_dlp_download(link, type="audio", title=await self.title(link))
+        # === AUDIO MODE ===
+        title = await self.title(link)
+        p = await yt_dlp_download(link, type="audio", title=title)
         return (p, True) if p else (None, None)
