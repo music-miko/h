@@ -33,8 +33,8 @@ PLAYLIST_FETCH_LIMIT = int(getenv("PLAYLIST_FETCH_LIMIT", "30"))
 
 # ── External APIs ──────────────────────────────────────────────────────────────
 COOKIE_URL = getenv("COOKIE_URL")  # required (paste link)
-API_URL = getenv("API_URL", 'https://api.thequickearn.xyz') #youtube song url
-VIDEO_API_URL = getenv("VIDEO_API_URL", 'https://api.video.thequickearn.xyz')
+API_URL = getenv("API_URL", 'https://deadlinetech.site') #youtube song url
+VIDEO_API_URL = getenv("VIDEO_API_URL", 'https://deadlinetech.site')
 API_KEY = getenv("API_KEY")
 DEEP_API = getenv("DEEP_API")      # optional
 
