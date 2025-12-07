@@ -193,7 +193,7 @@ async def _deadlinetech_download(link: str, media_type: str) -> Optional[str]:
     """
     Call Deadlinetech merged API for VIDEO:
 
-        GET {API_URL}/song/{video_id}?media_type=video&api_key=...&return_file=true
+        GET {API_URL2}/song/{video_id}?media_type=video&api_key=...&return_file=true
     """
     if not API_URL2 or not API_KEY2:
         return None
@@ -456,9 +456,14 @@ async def api_download_track(link: str) -> Optional[str]:
 
         if msg_id_int is not None:
             for attempt in range(1, API_RETRIES + 1):
+                # Build a unique filename to avoid 'downloads.temp' collisions
+                unique_name = os.path.join(
+                    DOWNLOAD_DIR,
+                    f"fallen_{chat}_{msg_id_int}_{uuid.uuid4().hex[:6]}"
+                )
                 try:
                     msg = await TG_APP.get_messages(chat_id=chat, message_ids=msg_id_int)
-                    file_path = await msg.download(file_name=DOWNLOAD_DIR)
+                    file_path = await msg.download(file_name=unique_name)
                     LOGGER.info(f"[Track API] Telegram media downloaded: {file_path}")
                     return file_path
                 except tg_errors.FloodWait as e:  # type: ignore[attr-defined]
@@ -467,8 +472,14 @@ async def api_download_track(link: str) -> Optional[str]:
                     )
                     await asyncio.sleep(e.value)
                 except Exception as e:
+                    # If destination path already exists and file is present, reuse it
+                    if "Destination path" in str(e) and os.path.exists(unique_name):
+                        LOGGER.info(
+                            f"[Track API] Reusing existing Telegram file: {unique_name}"
+                        )
+                        return unique_name
                     LOGGER.warning(f"[Track API TG DOWNLOAD ERROR] {e}")
-                    break  # Don't retry non-flood errors
+                    break  # Don't retry non-FloodWait errors
 
     # Fallback: HTTP download from CDN
     return await api_download_cdn(cdn_url)
