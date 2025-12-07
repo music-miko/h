@@ -24,7 +24,7 @@ MONGO_DB_URI = getenv("MONGO_DB_URI")
 LOGGER_ID = int(getenv("LOGGER_ID", -1002014167331))
 
 # ── Limits (durations in min/sec; sizes in bytes) ──────────────────────────────
-DURATION_LIMIT_MIN = int(getenv("DURATION_LIMIT", 300))
+DURATION_LIMIT_MIN = int(getenv("DURATION_LIMIT", 900))
 SONG_DOWNLOAD_DURATION = int(getenv("SONG_DOWNLOAD_DURATION", "1200"))
 SONG_DOWNLOAD_DURATION_LIMIT = int(getenv("SONG_DOWNLOAD_DURATION_LIMIT", "1800"))
 TG_AUDIO_FILESIZE_LIMIT = int(getenv("TG_AUDIO_FILESIZE_LIMIT", "157286400"))
@@ -33,9 +33,11 @@ PLAYLIST_FETCH_LIMIT = int(getenv("PLAYLIST_FETCH_LIMIT", "30"))
 
 # ── External APIs ──────────────────────────────────────────────────────────────
 COOKIE_URL = getenv("COOKIE_URL")  # required (paste link)
-API_URL = getenv("API_URL", 'https://deadlinetech.site') #youtube song url
-VIDEO_API_URL = getenv("VIDEO_API_URL", 'https://deadlinetech.site')
+API_URL = getenv("API_URL", 'https://tgmusic.fallenapi.fun') #youtube song url
+API_URL2 = getenv("API_URL2", 'https://beta.deadlinetech.site')
 API_KEY = getenv("API_KEY")
+API_KEY2 = gentenv("API_KEY2")
+
 DEEP_API = getenv("DEEP_API")      # optional
 
 # ── Hosting / deployment ───────────────────────────────────────────────────────
