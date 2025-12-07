@@ -36,7 +36,7 @@ COOKIE_URL = getenv("COOKIE_URL")  # required (paste link)
 API_URL = getenv("API_URL", 'https://tgmusic.fallenapi.fun') #youtube song url
 API_URL2 = getenv("API_URL2", 'https://beta.deadlinetech.site')
 API_KEY = getenv("API_KEY")
-API_KEY2 = gentenv("API_KEY2")
+API_KEY2 = getenv("API_KEY2")
 
 DEEP_API = getenv("DEEP_API")      # optional
 
