@@ -3,6 +3,8 @@ import asyncio
 import glob
 import os
 import re
+import urllib.parse
+import uuid
 from typing import Dict, Optional
 
 import aiofiles
@@ -13,14 +15,23 @@ from yt_dlp import YoutubeDL
 from AnnieXMedia.core.dir import CACHE_DIR, DOWNLOAD_DIR
 from AnnieXMedia.utils.cookie_handler import COOKIE_PATH as _COOKIES_FILE
 from AnnieXMedia.utils.tuning import CHUNK_SIZE, SEM
-from config import API_KEY, API_URL
+from config import API_KEY, API_URL, API_KEY2, API_URL2
 from AnnieXMedia.logging import LOGGER as _LOGGER
 
 LOGGER = _LOGGER(__name__)
 
-# Deadlinetech (merged_api) toggles
-# merged_api serves both audio & video via the same /song endpoint
-USE_AUDIO_API = bool(API_URL and API_KEY)
+# Try to import Telegram app & errors (optional, used for t.me CDN links)
+try:
+    from AnnieXMedia import app as TG_APP
+except Exception:  # pragma: no cover - optional dependency
+    TG_APP = None
+
+try:
+    from pyrogram import errors as tg_errors
+except Exception:  # pragma: no cover - optional dependency
+    tg_errors = None
+
+# Old Deadlinetech (merged_api) toggles – used ONLY for video now
 USE_VIDEO_API = bool(API_URL and API_KEY)
 
 _inflight: Dict[str, asyncio.Future] = {}
@@ -29,6 +40,8 @@ _session: Optional[aiohttp.ClientSession] = None
 _session_lock = asyncio.Lock()
 
 YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
+
+API_RETRIES = 3
 
 
 def log_download_source(title: str, source: str) -> None:
@@ -172,26 +185,17 @@ async def download_file(url: str, out_path: str) -> Optional[str]:
 
 
 # =======================================================================
-# Deadlinetech.site merged API integration
+# Old Deadlinetech merged API integration – used ONLY for VIDEO now
 # =======================================================================
+
 
 async def _deadlinetech_download(link: str, media_type: str) -> Optional[str]:
     """
-    Call Deadlinetech merged API:
+    Call Deadlinetech merged API for VIDEO:
 
-        GET {API_URL}/song/{video_id}?media_type=audio|video&api_key=...&return_file=true
-
-    The API (merged_api.py) will:
-      - download from YouTube on the *API server*
-      - upload to DB channel & cache
-      - stream the final media file back in the HTTP response
-
-    We:
-      - detect an extension from Content-Type (webm / m4a / mp4)
-      - stream it to our bot's DOWNLOAD_DIR as {video_id}.{ext}
-      - return that local path
+        GET {API_URL}/song/{video_id}?media_type=video&api_key=...&return_file=true
     """
-    if not API_URL or not API_KEY:
+    if not API_URL2 or not API_KEY2:
         return None
 
     vid = extract_video_id(link)
@@ -199,11 +203,11 @@ async def _deadlinetech_download(link: str, media_type: str) -> Optional[str]:
         LOGGER.warning(f"_deadlinetech_download: could not extract video id from link: {link}")
         return None
 
-    base = API_URL.rstrip("/")
+    base = API_URL2.rstrip("/")
     url = f"{base}/song/{vid}"
     params = {
         "media_type": media_type,
-        "api_key": API_KEY,
+        "api_key": API_KEY2,
         "return_file": "true",
     }
 
@@ -226,16 +230,13 @@ async def _deadlinetech_download(link: str, media_type: str) -> Optional[str]:
             content_type = (resp.headers.get("Content-Type") or "").lower()
             dispo = resp.headers.get("Content-Disposition") or ""
 
-            # Decide extension based on media_type and content-type/filename
             ext = None
 
-            # Try filename from Content-Disposition first
             if "filename=" in dispo:
                 filename = dispo.split("filename=")[-1].strip('";\' ')
                 if "." in filename:
                     ext = filename.rsplit(".", 1)[-1].lower()
 
-            # If still unknown, guess from content-type
             if not ext:
                 if media_type == "video":
                     if "webm" in content_type:
@@ -243,7 +244,7 @@ async def _deadlinetech_download(link: str, media_type: str) -> Optional[str]:
                     else:
                         ext = "mp4"
                 else:
-                    # audio
+                    # Shouldn't reach here anymore for audio, but keep generic.
                     if "webm" in content_type or "opus" in content_type or "ogg" in content_type:
                         ext = "webm"
                     elif "mpeg" in content_type or "mp4" in content_type or "aac" in content_type:
@@ -251,7 +252,6 @@ async def _deadlinetech_download(link: str, media_type: str) -> Optional[str]:
                     elif "mp3" in content_type:
                         ext = "mp3"
                     else:
-                        # default safe choice
                         ext = "m4a"
 
             out_path = os.path.join(DOWNLOAD_DIR, f"{vid}.{ext}")
@@ -279,18 +279,9 @@ async def _deadlinetech_download(link: str, media_type: str) -> Optional[str]:
         return None
 
 
-async def api_download_audio(link: str) -> Optional[str]:
-    """
-    Audio download using Deadlinetech merged API.
-    """
-    if not USE_AUDIO_API:
-        return None
-    return await _deadlinetech_download(link, media_type="audio")
-
-
 async def api_download_video(link: str) -> Optional[str]:
     """
-    Video download using Deadlinetech merged API.
+    Video download using old Deadlinetech merged API.
     """
     if not USE_VIDEO_API:
         return None
@@ -298,8 +289,195 @@ async def api_download_video(link: str) -> Optional[str]:
 
 
 # =======================================================================
+# Fallen-style Track API integration (for AUDIO – like fallenapi.py)
+# =======================================================================
+
+
+def _get_api_headers() -> Dict[str, str]:
+    return {
+        "X-API-Key": API_KEY or "",
+        "Accept": "application/json",
+    }
+
+
+async def api_get_track(link: str) -> Optional[Dict]:
+    """
+    Call the new Fallen Track API:
+
+        GET {API_URL}/track?url=<urlencoded_original_url>
+    """
+    if not API_URL or not API_KEY:
+        return None
+
+    base = API_URL.rstrip("/")
+    encoded_url = urllib.parse.quote(link, safe="")
+    endpoint = f"{base}/track?url={encoded_url}"
+
+    for attempt in range(1, API_RETRIES + 1):
+        try:
+            session = await get_http_session()
+            async with session.get(endpoint, headers=_get_api_headers()) as resp:
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    text = await resp.text()
+                    LOGGER.warning(
+                        f"[Track API] Non-JSON response (status {resp.status}): {text[:200]}"
+                    )
+                    return None
+
+                if resp.status == 200:
+                    if isinstance(data, dict):
+                        return data
+                    LOGGER.warning(
+                        f"[Track API] Unexpected payload type: {type(data)}; expected dict"
+                    )
+                    return None
+
+                error_msg = None
+                if isinstance(data, dict):
+                    error_msg = data.get("error") or data.get("message")
+                    status_code = data.get("status", resp.status)
+                else:
+                    status_code = resp.status
+                LOGGER.warning(
+                    f"[Track API ERROR] {error_msg or 'Unexpected error'} "
+                    f"(status {status_code})"
+                )
+                return None
+
+        except aiohttp.ClientError as e:
+            LOGGER.warning(
+                f"[Track API NETWORK ERROR] Attempt {attempt}/{API_RETRIES} failed: {e}"
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning(
+                f"[Track API TIMEOUT] Attempt {attempt}/{API_RETRIES} exceeded timeout."
+            )
+        except Exception as e:
+            LOGGER.warning(f"[Track API UNEXPECTED ERROR] {e}")
+
+        await asyncio.sleep(1)
+
+    LOGGER.warning("[Track API FAILED] All retry attempts exhausted.")
+    return None
+
+
+async def api_download_cdn(cdn_url: str) -> Optional[str]:
+    """
+    Download file from a generic CDN URL, saving into DOWNLOAD_DIR.
+    """
+    if not cdn_url:
+        return None
+
+    for attempt in range(1, API_RETRIES + 1):
+        try:
+            session = await get_http_session()
+            async with session.get(cdn_url) as resp:
+                if resp.status != 200:
+                    LOGGER.warning(
+                        f"[CDN HTTP {resp.status}] Failed to download from {cdn_url}"
+                    )
+                    return None
+
+                cd = resp.headers.get("Content-Disposition")
+                if cd:
+                    match = re.findall(r'filename="?([^";]+)"?', cd)
+                    filename = match[0] if match else None
+                else:
+                    filename = None
+
+                if not filename:
+                    filename = os.path.basename(cdn_url.split("?")[0]) or f"{uuid.uuid4()[:8]}.mp3"
+
+                out_path = os.path.join(DOWNLOAD_DIR, filename)
+
+                async with aiofiles.open(out_path, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
+                        if not chunk:
+                            break
+                        await f.write(chunk)
+
+            if os.path.exists(out_path):
+                LOGGER.info(f"[CDN] Download complete: {out_path}")
+                return out_path
+
+            LOGGER.warning(
+                f"[CDN] Download finished but file not found on disk: {out_path}"
+            )
+            return None
+
+        except aiohttp.ClientError as e:
+            LOGGER.warning(
+                f"[CDN NETWORK ERROR] Attempt {attempt}/{API_RETRIES} failed: {e}"
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning(
+                f"[CDN TIMEOUT] Attempt {attempt}/{API_RETRIES} exceeded timeout."
+            )
+        except Exception as e:
+            LOGGER.warning(f"[CDN UNEXPECTED ERROR] {e}")
+
+        await asyncio.sleep(1)
+
+    LOGGER.warning("[CDN FAILED] All retry attempts exhausted.")
+    return None
+
+
+async def api_download_track(link: str) -> Optional[str]:
+    """
+    High-level wrapper for Fallen audio:
+
+    - Call Track API to fetch metadata (cdnurl, etc.).
+    - If cdnurl is a t.me link and a Telegram client is available, download via Telegram.
+    - Otherwise, download from CDN via HTTP.
+    """
+    track = await api_get_track(link)
+    if not track:
+        LOGGER.warning("[Track API] No track metadata found.")
+        return None
+
+    cdn_url = None
+    if isinstance(track, dict):
+        cdn_url = track.get("cdnurl") or track.get("url")
+
+    if not cdn_url:
+        LOGGER.warning("[Track API] Response did not contain 'cdnurl'.")
+        return None
+
+    # If API returned a Telegram message link (t.me), use Telegram client when available.
+    tg_match = re.match(r"https?://t\.me/([^/]+)/(\d+)", cdn_url)
+    if tg_match and TG_APP is not None and tg_errors is not None:
+        chat, msg_id = tg_match.groups()
+        try:
+            msg_id_int = int(msg_id)
+        except ValueError:
+            msg_id_int = None
+
+        if msg_id_int is not None:
+            for attempt in range(1, API_RETRIES + 1):
+                try:
+                    msg = await TG_APP.get_messages(chat_id=chat, message_ids=msg_id_int)
+                    file_path = await msg.download(file_name=DOWNLOAD_DIR)
+                    LOGGER.info(f"[Track API] Telegram media downloaded: {file_path}")
+                    return file_path
+                except tg_errors.FloodWait as e:  # type: ignore[attr-defined]
+                    LOGGER.warning(
+                        f"[Track API TG FLOODWAIT] Sleeping {e.value}s before retry."
+                    )
+                    await asyncio.sleep(e.value)
+                except Exception as e:
+                    LOGGER.warning(f"[Track API TG DOWNLOAD ERROR] {e}")
+                    break  # Don't retry non-flood errors
+
+    # Fallback: HTTP download from CDN
+    return await api_download_cdn(cdn_url)
+
+
+# =======================================================================
 # yt-dlp helpers & fallbacks
 # =======================================================================
+
 
 def get_final_path_from_info(info: Optional[Dict]) -> Optional[str]:
     """
@@ -329,7 +507,6 @@ def get_final_path_from_info(info: Optional[Dict]) -> Optional[str]:
 def normalize_ytdlp_link(link: str) -> str:
     """
     If `link` is not a valid URL or a direct YouTube ID, treat it as a search query.
-    This lets yt-dlp handle plain song names like 'i see slow ...'.
     """
     if not link:
         return link
@@ -362,10 +539,8 @@ def download_with_ytdlp_sync(link: str, fmt: str) -> Optional[str]:
 
         with YoutubeDL(opts) as ydl:
             info = ydl.extract_info(norm_link, download=False)
-            # Maybe the file already exists
             if path := get_final_path_from_info(info):
                 return path
-            # Otherwise, perform download
             ydl.download([norm_link])
             return get_final_path_from_info(info)
     except Exception as e:
@@ -399,9 +574,13 @@ async def deduplicate_download(key: str, runner):
 async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str]:
     """
     Main entry:
-    - First try Deadlinetech merged API (audio/video) if enabled.
-    - If API fails → fall back to yt-dlp with cookies.
-    - Uses type-aware cache to avoid using audio file for video, etc.
+    - AUDIO:
+        * Try Fallen Track API (new) first.
+        * Fallback to yt-dlp audio.
+    - VIDEO:
+        * Try old Deadlinetech /song API first.
+        * Fallback to yt-dlp video.
+    - Type-aware cache so audio/video don't mix.
     """
     loop = asyncio.get_running_loop()
     vid = extract_video_id(link)
@@ -420,16 +599,15 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
     dedup_id = vid or normalize_ytdlp_link(link)
     key = f"{type}:{dedup_id}"
 
-    # AUDIO MODE
+    # AUDIO MODE (Fallen API + yt-dlp)
     if type == "audio":
 
         async def run():
-            # 1) Try Deadlinetech API first
-            if USE_AUDIO_API:
-                api_result = await api_download_audio(link)
-                if api_result and os.path.exists(api_result):
-                    log_download_source(title or "Unknown", "Deadlinetech API")
-                    return api_result
+            # 1) Fallen Track API (new)
+            track_result = await api_download_track(link)
+            if track_result and os.path.exists(track_result):
+                log_download_source(title or "Unknown", "Fallen Track API")
+                return track_result
 
             # 2) Fallback to yt-dlp with cookies (first attempt: opus/webm)
             primary_fmt = "bestaudio[ext=webm][acodec=opus]"
@@ -465,15 +643,15 @@ async def yt_dlp_download(link: str, type: str, title: str = "") -> Optional[str
 
         return await deduplicate_download(key, run)
 
-    # VIDEO MODE
+    # VIDEO MODE (Old API + yt-dlp)
     elif type == "video":
 
         async def run():
-            # 1) Try Deadlinetech API first
+            # 1) Old Deadlinetech /song API
             if USE_VIDEO_API:
                 api_result = await api_download_video(link)
                 if api_result and os.path.exists(api_result):
-                    log_download_source(title or "Unknown", "Deadlinetech API")
+                    log_download_source(title or "Unknown", "Deadlinetech Video API")
                     return api_result
 
             # 2) Fallback to yt-dlp with cookies (best 720p mp4 + audio)
