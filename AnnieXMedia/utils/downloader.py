@@ -32,7 +32,7 @@ except Exception:  # pragma: no cover - optional dependency
     tg_errors = None
 
 # Old Deadlinetech (merged_api) toggles – used ONLY for video now
-USE_VIDEO_API = bool(API_URL and API_KEY)
+USE_VIDEO_API = bool(API_URL2 and API_KEY2)
 
 _inflight: Dict[str, asyncio.Future] = {}
 _inflight_lock = asyncio.Lock()
