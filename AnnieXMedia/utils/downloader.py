@@ -42,7 +42,7 @@ TG_LINK_RE = re.compile(r"https?://t\.me/(?:(c)/(\d+)|([^/]+)/(\d+))", re.IGNORE
 
 # ✅ V2 only
 V2_API_RETRIES = 1
-JOB_POLL_ATTEMPTS = 14
+JOB_POLL_ATTEMPTS = 18
 JOB_POLL_INTERVAL = 2.0
 JOB_POLL_BACKOFF = 1.2
 
