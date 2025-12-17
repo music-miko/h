@@ -13,7 +13,7 @@ from pyrogram.types import Message
 from youtubesearchpython.__future__ import VideosSearch, Playlist
 
 from AnnieXMedia.utils.cookie_handler import COOKIE_PATH
-from AnnieXMedia.utils.downloader import yt_dlp_download
+from AnnieXMedia.utils.downloader import media_download   # ✅ UPDATED
 from AnnieXMedia.utils.errors import capture_internal_err
 from AnnieXMedia.utils.formatters import time_to_seconds
 from AnnieXMedia.utils.tuning import YTDLP_TIMEOUT, YOUTUBE_META_MAX, YOUTUBE_META_TTL
@@ -221,7 +221,6 @@ class YouTubeAPI:
                     f"for query/URL: '{prepared_link}'"
                 )
         except Exception as search_err:
-            # Fallback: use yt-dlp directly; if it's not a URL, use ytsearch1:query
             yt_link = prepared_link
             if not yt_link.startswith("http"):
                 yt_link = f"ytsearch1:{prepared_link}"
@@ -381,6 +380,7 @@ class YouTubeAPI:
             r.get("id", ""),
         )
 
+    # ✅ UPDATED: Download uses V2-only downloader now (media_download)
     @capture_internal_err
     async def download(
         self,
@@ -392,8 +392,8 @@ class YouTubeAPI:
     ) -> Union[Tuple[str, Optional[bool]], Tuple[None, None]]:
         """
         Unified download logic:
-        - AUDIO: always uses yt_dlp_download(type="audio") → returns (path, True) or (None, None)
-        - VIDEO (non-live): always uses yt_dlp_download(type="video") → returns (path, True) or (None, None)
+        - AUDIO: uses media_download("audio") -> returns (path, True) or (None, None)
+        - VIDEO (non-live): uses media_download("video") -> returns (path, True) or (None, None)
         - VIDEO (live): uses direct streaming URL via self.video()
         """
         link = self._prepare_link(link, videoid)
@@ -407,12 +407,11 @@ class YouTubeAPI:
                     return stream_url, None
                 return None, None
 
-            # Non-live video: download file via unified downloader (API → yt-dlp)
             title = await self.title(link)
-            p = await yt_dlp_download(link, type="video", title=title)
+            p = await media_download(link, "video", title)
             return (p, True) if p else (None, None)
 
         # === AUDIO MODE ===
         title = await self.title(link)
-        p = await yt_dlp_download(link, type="audio", title=title)
+        p = await media_download(link, "audio", title)
         return (p, True) if p else (None, None)
