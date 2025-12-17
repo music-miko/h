@@ -41,8 +41,8 @@ YOUTUBE_ID_IN_URL_RE = re.compile(r"""(?x)(?:v=|\/)([A-Za-z0-9_-]{11})|youtu\.be
 TG_LINK_RE = re.compile(r"https?://t\.me/(?:(c)/(\d+)|([^/]+)/(\d+))", re.IGNORECASE)
 
 # ✅ V2 only
-V2_API_RETRIES = 1
-JOB_POLL_ATTEMPTS = 18
+V2_API_RETRIES = 2
+JOB_POLL_ATTEMPTS = 10
 JOB_POLL_INTERVAL = 2.0
 JOB_POLL_BACKOFF = 1.2
 
