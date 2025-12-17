@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 from yt_dlp import YoutubeDL
 
-from AnnieXMedia.utils.downloader import yt_dlp_download
+from AnnieXMedia.utils.downloader import media_download as yt_dlp_download
 from AnnieXMedia.utils.formatters import seconds_to_min
 
 
