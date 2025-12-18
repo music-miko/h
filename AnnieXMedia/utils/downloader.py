@@ -86,6 +86,13 @@ NO_CANDIDATE_WAIT = 4
 CDN_RETRIES = 5
 CDN_RETRY_DELAY = 2
 
+# -----------------------
+# NEW: HARD per-song timeout
+# -----------------------
+# If a song isn't downloaded within this period, we STOP ALL retries/cycles,
+# mark it as FAILED, and the caller can skip it.
+V2_SONG_TIMEOUT = 140  # seconds
+
 
 # -----------------------
 # Regex / helpers
@@ -473,6 +480,10 @@ async def deduplicate_download(key: str, runner):
 async def media_download(link: str, type: str, title: str = "") -> Optional[str]:
     """
     V2 ONLY. Logs ONLY final success/fail.
+
+    NEW:
+      - Hard timeout per song using V2_SONG_TIMEOUT.
+      - If timeout hits, retries stop immediately and the item is marked failed.
     """
     _inc("total")
 
@@ -481,34 +492,49 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
     key = f"{type}:{dedup_id}"
 
     async def run():
-        if type == "audio":
-            path = await v2_download(link, media_type="audio")
-            if path and os.path.exists(path):
-                _inc("success")
-                _inc("success_audio")
-                LOGGER.info(f"V2_DOWNLOAD_SUCCESS type=audio title='{title or 'Unknown'}' path='{path}'")
-                return path
+        try:
+            if type == "audio":
+                path = await asyncio.wait_for(v2_download(link, media_type="audio"), timeout=V2_SONG_TIMEOUT)
+                if path and os.path.exists(path):
+                    _inc("success")
+                    _inc("success_audio")
+                    LOGGER.info(f"V2_DOWNLOAD_SUCCESS type=audio title='{title or 'Unknown'}' path='{path}'")
+                    return path
+
+                _inc("failed")
+                _inc("failed_audio")
+                LOGGER.warning(f"V2_DOWNLOAD_FAILED type=audio title='{title or 'Unknown'}' link='{link}'")
+                return None
+
+            if type == "video":
+                path = await asyncio.wait_for(v2_download(link, media_type="video"), timeout=V2_SONG_TIMEOUT)
+                if path and os.path.exists(path):
+                    _inc("success")
+                    _inc("success_video")
+                    LOGGER.info(f"V2_DOWNLOAD_SUCCESS type=video title='{title or 'Unknown'}' path='{path}'")
+                    return path
+
+                _inc("failed")
+                _inc("failed_video")
+                LOGGER.warning(f"V2_DOWNLOAD_FAILED type=video title='{title or 'Unknown'}' link='{link}'")
+                return None
 
             _inc("failed")
-            _inc("failed_audio")
-            LOGGER.warning(f"V2_DOWNLOAD_FAILED type=audio title='{title or 'Unknown'}' link='{link}'")
+            LOGGER.warning(f"V2_DOWNLOAD_FAILED type=unknown title='{title or 'Unknown'}' link='{link}'")
             return None
 
-        if type == "video":
-            path = await v2_download(link, media_type="video")
-            if path and os.path.exists(path):
-                _inc("success")
-                _inc("success_video")
-                LOGGER.info(f"V2_DOWNLOAD_SUCCESS type=video title='{title or 'Unknown'}' path='{path}'")
-                return path
-
+        except asyncio.TimeoutError:
+            # Hard stop: do NOT retry cycles after this, just fail and skip.
+            _inc("timeout_fail")
             _inc("failed")
-            _inc("failed_video")
-            LOGGER.warning(f"V2_DOWNLOAD_FAILED type=video title='{title or 'Unknown'}' link='{link}'")
-            return None
+            if type == "audio":
+                _inc("failed_audio")
+            elif type == "video":
+                _inc("failed_video")
 
-        _inc("failed")
-        LOGGER.warning(f"V2_DOWNLOAD_FAILED type=unknown title='{title or 'Unknown'}' link='{link}'")
-        return None
+            LOGGER.warning(
+                f"V2_DOWNLOAD_TIMEOUT type={type} title='{title or 'Unknown'}' link='{link}' timeout={V2_SONG_TIMEOUT}s"
+            )
+            return None
 
     return await deduplicate_download(key, run)
