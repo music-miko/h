@@ -195,8 +195,8 @@ async def welcome(client, message: Message):
                     return await app.leave_chat(message.chat.id)
 
                 out = start_panel(_)
-                await message.reply_video(
-                    random.choice(START_VIDS),
+                await message.reply_photo(
+                    photo=config.START_IMG_URL,
                     caption=_["start_3"].format(
                         message.from_user.mention,
                         app.mention,
