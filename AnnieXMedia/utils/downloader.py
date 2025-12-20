@@ -91,7 +91,7 @@ CDN_RETRY_DELAY = 2
 # -----------------------
 # If a song isn't downloaded within this period, we STOP ALL retries/cycles,
 # mark it as FAILED, and the caller can skip it.
-V2_SONG_TIMEOUT = 140  # seconds
+V2_SONG_TIMEOUT = 200  # seconds
 
 
 # -----------------------
