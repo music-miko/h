@@ -155,7 +155,7 @@ play_10 : "<b>ᴛɪᴛʟᴇ :</b> {0}\n<b>ᴅᴜʀᴀᴛɪᴏɴ :</b> {1} ᴍɪ�
 play_11 : "<u><b>{0} sᴘᴏᴛɪғʏ ᴘʟᴀʏᴇʀ</b></u>\n\n<b>ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ :</b> {1}"
 play_12 : "<u><b>{0} ᴀᴘᴘʟᴇ ᴘʟᴀʏᴇʀ</b></u>\n\n<b>ʀᴇǫᴜᴇsᴛᴇᴅ ʙʏ :</b> {1}"
 play_13 : "» ʟɪᴠᴇ sᴛʀᴇᴀᴍ ᴅᴇᴛᴇᴄᴛᴇᴅ.\n\nᴀʀᴇ ʏᴏᴜ sᴜʀᴇ ᴛʜᴀᴛ ʏᴏᴜ ᴡᴀɴɴᴀ ᴘʟᴀʏ ᴛʜɪs ʟɪᴠᴇ sᴛʀᴇᴀᴍ ?"
-play_14 : "ꜰᴀɪʟᴇᴅ ᴛᴏ ꜰᴇᴛᴄʜ ᴛʀᴀᴄᴋ ᴅᴇᴛᴀɪʟs.\n\nᴛʀʏ ᴘʟᴀʏɪɴɢ ᴀɴʏ ᴏᴛʜᴇʀ."
+play_14 : "Unable to retrieve this track at the moment.\n\nYou can download the song using inline search by typing:\n<code>@MultiSourceDLBot Song Name</code>\n\nAfter receiving the audio, use /play to play it here."
 play_15 : "» ғᴀɪʟᴇᴅ ᴛᴏ ᴘʀᴏᴄᴇss ǫᴜᴇʀʏ.\n\nɪ ᴄᴀɴ ᴏɴʟʏ ᴘʟᴀʏ sᴘᴏᴛɪғʏ ᴛʀᴀᴄᴋs, ᴀʟʙᴜᴍs, ᴀʀᴛɪsᴛs ᴀɴᴅ ᴘʟᴀʏʟɪsᴛs."
 play_16 : "ɴᴏ ᴀᴄᴛɪᴠᴇ ᴠᴏɪᴄᴇ ᴄʜᴀᴛ.\n\nᴛᴏ ᴜsᴇ ғᴏʀᴄᴇ ᴩʟᴀʏ, ᴛʜᴇʀᴇ ᴍᴜsᴛ ʙᴇ ᴀɴ ᴀᴄᴛɪᴠᴇ ᴠᴏɪᴄᴇᴄʜᴀᴛ."
 play_17 : "ᴘʟᴇᴀsᴇ ᴛᴜʀɴ ᴏɴ ᴠɪᴅᴇᴏᴄʜᴀᴛ, ɪ'ᴍ ᴜɴᴀʙʟᴇ ᴛᴏ sᴛʀᴇᴀᴍ ᴜʀʟs."
