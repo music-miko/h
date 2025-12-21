@@ -99,7 +99,7 @@ DURATION_LIMIT = time_to_seconds(f"{DURATION_LIMIT_MIN}:00")
 # ───── Bot Introduction Messages ───── #
 AYU = ["💞", "🦋", "🔍", "🧪", "⚡️", "🔥", "🎩", "🌈", "🍷", "🥂", "🥃", "🕊️", "🪄", "💌", "🧨"]
 WELCOME_TEXT = (
-"<b>𝖧𝖾𝗒𝗒</b> {0}, 🌷\n\n๏ 𝖸𝗈𝗎’𝗋𝖾 𝗍𝖺𝗅𝗄𝗂𝗇𝗀 𝗍𝗈 {1}!\n\n➻ 𝖠 𝗉𝗋𝖾𝗆𝗂𝗎𝗆, 𝗉𝗈𝗐𝖾𝗋𝗉𝖺𝖼𝗄𝖾𝖽 𝖬𝗎𝗌𝗂𝖼 𝖡𝗈𝗍 𝗍𝗈 𝗅𝗂𝗀𝗁𝗍 𝗎𝗉 𝗒𝗈𝗎𝗋 𝗀𝗋𝗈𝗎𝗉 𝗏𝗂𝖻𝖾𝗌 🎶\n───────────────────────────\n<b>๏ 𝖳𝗋𝗒 <code>/help</code> 𝗍𝗈 𝖽𝗂𝗌𝖼𝗈𝗏𝖾𝗋 𝖺𝗅𝗅 𝗍𝗁𝖾 𝖿𝗎𝗇 𝖼𝗈𝗆𝗆𝖺𝗇𝖽𝗌 𝖺𝗇𝖽 𝖿𝖾𝖺𝗍𝗎𝗋𝖾𝗌!</b>"
+"<b>Hello</b> {0},\n\nYou are now interacting with {1}.\n\n➻ A premium, high-performance music bot designed to enhance your group experience.\n──────────────────────────\n<b>Use <code>/help</code> to explore available commands and features.</b>"
 )
 
 # ── Runtime structures ─────────────────────────────────────────────────────────
