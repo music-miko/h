@@ -11,14 +11,16 @@ import aiofiles
 import aiohttp
 from aiohttp import TCPConnector
 
+from motor.motor_asyncio import AsyncIOMotorClient
+
 from AnnieXMedia.core.dir import DOWNLOAD_DIR
 from AnnieXMedia.utils.tuning import CHUNK_SIZE
-from config import API_KEY, API_URL
+from config import API_KEY, API_URL, MEDIA_CHANNEL_ID, DB_URI
 from AnnieXMedia.logging import LOGGER as _LOGGER
 
 LOGGER = _LOGGER(__name__)
 
-# Optional Telegram client for t.me links
+# Optional Telegram client for t.me links / Media DB channel downloads
 try:
     from AnnieXMedia import app as TG_APP
 except Exception:
@@ -29,34 +31,85 @@ try:
 except Exception:
     tg_errors = None
 
+# Optional DB name / collection overrides (safe defaults)
+try:
+    from config import MEDIA_DB_NAME
+except Exception:
+    MEDIA_DB_NAME = "arcapi"
+
+try:
+    from config import MEDIA_COLLECTION_NAME
+except Exception:
+    MEDIA_COLLECTION_NAME = "medias"
+
+# Single shared mongo client
+_MONGO_CLIENT: Optional[AsyncIOMotorClient] = None
+
+
+def _get_media_collection():
+    """
+    Returns the motor collection used for media index.
+    DB and collection can be overridden by config:
+      - DB_URI (required)
+      - MEDIA_DB_NAME (optional, default 'arcapi')
+      - MEDIA_COLLECTION_NAME (optional, default 'medias')
+    """
+    global _MONGO_CLIENT
+    if not DB_URI:
+        return None
+    if _MONGO_CLIENT is None:
+        _MONGO_CLIENT = AsyncIOMotorClient(DB_URI)
+    db = _MONGO_CLIENT[MEDIA_DB_NAME]
+    return db[MEDIA_COLLECTION_NAME]
+
+
+async def is_media(track_id: str, isVideo: bool = False) -> bool:
+    col = _get_media_collection()
+    if col is None:
+        return False
+    doc = await col.find_one({"track_id": track_id, "isVideo": isVideo}, {"_id": 1})
+    return bool(doc)
+
+
+async def get_media_id(track_id: str, isVideo: bool = False) -> Optional[int]:
+    col = _get_media_collection()
+    if col is None:
+        return None
+    doc = await col.find_one(
+        {"track_id": track_id, "isVideo": isVideo},
+        {"message_id": 1},
+    )
+    if not doc:
+        return None
+    mid = doc.get("message_id")
+    return int(mid) if mid is not None else None
+
 
 # -----------------------
-# STATS (import & use)
+# STATS
 # -----------------------
 DOWNLOAD_STATS: Dict[str, int] = {
     "total": 0,
     "success": 0,
     "failed": 0,
-
     "success_audio": 0,
     "success_video": 0,
     "failed_audio": 0,
     "failed_video": 0,
-
     "hard_fail_401": 0,
     "hard_fail_403": 0,
-
     "api_fail_other_4xx": 0,
     "api_fail_5xx": 0,
-
     "network_fail": 0,
     "timeout_fail": 0,
-
     "no_candidate": 0,
     "tg_fail": 0,
     "cdn_fail": 0,
-
     "hard_cycle_retries": 0,
+    # Media DB stats
+    "media_db_hit": 0,
+    "media_db_miss": 0,
+    "media_db_fail": 0,
 }
 
 def get_download_stats() -> Dict[str, int]:
@@ -71,11 +124,11 @@ def _inc(key: str, n: int = 1) -> None:
 
 
 # -----------------------
-# V2 SETTINGS (5 retries)
+# V2 SETTINGS
 # -----------------------
-V2_HTTP_RETRIES = 5              # network/timeout/5xx retries per request
-V2_DOWNLOAD_CYCLES = 5           # full flow cycles (retry for any failure)
-HARD_RETRY_WAIT = 3              # wait before retry after 401/403
+V2_HTTP_RETRIES = 5
+V2_DOWNLOAD_CYCLES = 5
+HARD_RETRY_WAIT = 3
 
 JOB_POLL_ATTEMPTS = 10
 JOB_POLL_INTERVAL = 2.0
@@ -87,12 +140,10 @@ CDN_RETRIES = 5
 CDN_RETRY_DELAY = 2
 
 # -----------------------
-# NEW: HARD per-song timeout
+# COMPLETE CYCLE TIMEOUT
 # -----------------------
-# If a song isn't downloaded within this period, we STOP ALL retries/cycles,
-# mark it as FAILED, and the caller can skip it.
-V2_SONG_TIMEOUT = 200  # seconds
-
+# Whole flow timeout: MediaDB attempt + V2 attempt combined
+CYCLE_TIMEOUT_SEC = 120
 
 # -----------------------
 # Regex / helpers
@@ -300,11 +351,85 @@ async def _download_from_telegram(tme_url: str) -> Optional[str]:
         return None
 
 
+# -----------------------
+# MEDIA DB FETCH
+# -----------------------
+async def _download_from_media_db(track_id: str, is_video: bool) -> Optional[str]:
+    """
+    1) check is_media(track_id, isVideo)
+    2) get_media_id(...)
+    3) download that message from MEDIA_CHANNEL_ID
+    """
+    if not track_id:
+        return None
+    if TG_APP is None:
+        return None
+    if not MEDIA_CHANNEL_ID:
+        return None
+    if not DB_URI:
+        # DB not configured
+        return None
+
+    ext = "mp4" if is_video else "mp3"
+
+    # Support multiple key styles (some DBs store track_id with ext)
+    keys_to_try = [
+        f"{track_id}.{ext}",
+        track_id,
+        f"{track_id}_{'v' if is_video else 'a'}",
+        f"{track_id}_{'v' if is_video else 'a'}.{ext}",
+    ]
+
+    try:
+        msg_id: Optional[int] = None
+        for k in keys_to_try:
+            if await is_media(k, isVideo=is_video):
+                msg_id = await get_media_id(k, isVideo=is_video)
+                break
+
+        if not msg_id:
+            _inc("media_db_miss")
+            return None
+
+        _inc("media_db_hit")
+
+        dl_dir = _as_download_dir(DOWNLOAD_DIR)
+        out_path = os.path.join(dl_dir, f"{track_id}.{ext}")
+
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return out_path
+
+        msg = await TG_APP.get_messages(chat_id=int(MEDIA_CHANNEL_ID), message_ids=int(msg_id))
+        if not msg:
+            _inc("media_db_fail")
+            return None
+
+        res = await msg.download(file_name=dl_dir)
+        fixed = _resolve_if_dir(res)
+        if not fixed or not os.path.exists(fixed) or os.path.getsize(fixed) <= 0:
+            _inc("media_db_fail")
+            return None
+
+        # Normalize to {track_id}.{ext}
+        try:
+            if fixed != out_path:
+                os.replace(fixed, out_path)
+                fixed = out_path
+        except Exception:
+            pass
+
+        if os.path.exists(fixed) and os.path.getsize(fixed) > 0:
+            return fixed
+
+        _inc("media_db_fail")
+        return None
+
+    except Exception:
+        _inc("media_db_fail")
+        return None
+
+
 async def _v2_request_json(endpoint: str, params: Dict[str, Any]) -> Optional[Any]:
-    """
-    Retries only on network/timeout/5xx.
-    Raises V2HardAPIError on 401/403 (caller decides to retry cycle).
-    """
     if not API_URL or not API_KEY:
         return None
 
@@ -339,7 +464,6 @@ async def _v2_request_json(endpoint: str, params: Dict[str, Any]) -> Optional[An
 
                 if 500 <= resp.status <= 599:
                     _inc("api_fail_5xx")
-                    # retry
                 else:
                     _inc("api_fail_other_4xx")
                     return None
@@ -360,10 +484,6 @@ async def _v2_request_json(endpoint: str, params: Dict[str, Any]) -> Optional[An
 
 
 async def v2_download(link: str, media_type: str) -> Optional[str]:
-    """
-    Full flow retries up to 5 cycles.
-    Includes retry on hard 401/403 by restarting the cycle.
-    """
     is_video = media_type == "video"
     vid = extract_video_id(link)
     query = vid or link
@@ -397,7 +517,6 @@ async def v2_download(link: str, media_type: str) -> Optional[str]:
             if isinstance(job_id, dict) and "id" in job_id:
                 job_id = job_id.get("id")
 
-        # Poll only if needed
         if job_id and not candidate:
             interval = JOB_POLL_INTERVAL
             for _ in range(1, JOB_POLL_ATTEMPTS + 1):
@@ -423,7 +542,6 @@ async def v2_download(link: str, media_type: str) -> Optional[str]:
                 continue
             return None
 
-        # Telegram direct
         if candidate.startswith(("http://t.me", "https://t.me")):
             path = await _download_from_telegram(candidate)
             if not path:
@@ -479,11 +597,11 @@ async def deduplicate_download(key: str, runner):
 
 async def media_download(link: str, type: str, title: str = "") -> Optional[str]:
     """
-    V2 ONLY. Logs ONLY final success/fail.
-
-    NEW:
-      - Hard timeout per song using V2_SONG_TIMEOUT.
-      - If timeout hits, retries stop immediately and the item is marked failed.
+    FINAL FLOW (as requested):
+      1) Try Media DB first (Mongo via DB_URI + TG Media Channel)
+      2) If not found -> try V2
+      3) Whole cycle timeout = 120s
+      4) If timeout -> return None
     """
     _inc("total")
 
@@ -491,49 +609,54 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
     dedup_id = vid or link.strip()
     key = f"{type}:{dedup_id}"
 
+    async def _cycle():
+        is_video = (type == "video")
+        is_audio = (type == "audio")
+
+        # 1) Media DB first (only if we can extract a track id)
+        if vid:
+            db_path = await _download_from_media_db(vid, is_video=is_video)
+            if db_path and os.path.exists(db_path):
+                _inc("success")
+                if is_audio:
+                    _inc("success_audio")
+                else:
+                    _inc("success_video")
+                LOGGER.info(f"MEDIA_DB_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{db_path}'")
+                return db_path
+
+        # 2) V2 fallback
+        v2_path = await v2_download(link, media_type=("video" if is_video else "audio"))
+        if v2_path and os.path.exists(v2_path):
+            _inc("success")
+            if is_audio:
+                _inc("success_audio")
+            else:
+                _inc("success_video")
+            LOGGER.info(f"V2_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{v2_path}'")
+            return v2_path
+
+        _inc("failed")
+        if is_audio:
+            _inc("failed_audio")
+        else:
+            _inc("failed_video")
+        LOGGER.warning(f"DOWNLOAD_FAILED type={type} title='{title or 'Unknown'}' link='{link}' reason='not_found'")
+        return None
+
     async def run():
         try:
-            if type == "audio":
-                path = await asyncio.wait_for(v2_download(link, media_type="audio"), timeout=V2_SONG_TIMEOUT)
-                if path and os.path.exists(path):
-                    _inc("success")
-                    _inc("success_audio")
-                    LOGGER.info(f"V2_DOWNLOAD_SUCCESS type=audio title='{title or 'Unknown'}' path='{path}'")
-                    return path
-
-                _inc("failed")
-                _inc("failed_audio")
-                LOGGER.warning(f"V2_DOWNLOAD_FAILED type=audio title='{title or 'Unknown'}' link='{link}'")
-                return None
-
-            if type == "video":
-                path = await asyncio.wait_for(v2_download(link, media_type="video"), timeout=V2_SONG_TIMEOUT)
-                if path and os.path.exists(path):
-                    _inc("success")
-                    _inc("success_video")
-                    LOGGER.info(f"V2_DOWNLOAD_SUCCESS type=video title='{title or 'Unknown'}' path='{path}'")
-                    return path
-
-                _inc("failed")
-                _inc("failed_video")
-                LOGGER.warning(f"V2_DOWNLOAD_FAILED type=video title='{title or 'Unknown'}' link='{link}'")
-                return None
-
-            _inc("failed")
-            LOGGER.warning(f"V2_DOWNLOAD_FAILED type=unknown title='{title or 'Unknown'}' link='{link}'")
-            return None
-
+            return await asyncio.wait_for(_cycle(), timeout=CYCLE_TIMEOUT_SEC)
         except asyncio.TimeoutError:
-            # Hard stop: do NOT retry cycles after this, just fail and skip.
+            # As you requested: timeout => return None
             _inc("timeout_fail")
             _inc("failed")
             if type == "audio":
                 _inc("failed_audio")
             elif type == "video":
                 _inc("failed_video")
-
             LOGGER.warning(
-                f"V2_DOWNLOAD_TIMEOUT type={type} title='{title or 'Unknown'}' link='{link}' timeout={V2_SONG_TIMEOUT}s"
+                f"DOWNLOAD_TIMEOUT type={type} title='{title or 'Unknown'}' link='{link}' timeout={CYCLE_TIMEOUT_SEC}s"
             )
             return None
 
