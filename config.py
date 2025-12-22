@@ -20,8 +20,10 @@ ASSUSERNAME = getenv("ASSUSERNAME", "HDjskjdjdhs")
 DB_NAME = getenv("DB_NAME")
 
 # ── Database & logging ─────────────────────────────────────────────────────────
+DB_URI = getenv("DB_URI")
 MONGO_DB_URI = getenv("MONGO_DB_URI")
 LOGGER_ID = int(getenv("LOGGER_ID", -1002014167331))
+MEDIA_CHANNEL_ID = int(getenv("MEDIA_CHANNEL_ID", -1001677848376))
 
 # ── Limits (durations in min/sec; sizes in bytes) ──────────────────────────────
 DURATION_LIMIT_MIN = int(getenv("DURATION_LIMIT", 300))
