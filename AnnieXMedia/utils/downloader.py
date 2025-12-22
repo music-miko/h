@@ -1,4 +1,6 @@
+# AnnieXMedia/utils/downloader.py
 # Authored By Certified Coders © 2025
+
 import asyncio
 import os
 import re
@@ -10,28 +12,38 @@ from urllib.parse import urlparse
 import aiofiles
 import aiohttp
 from aiohttp import TCPConnector
-
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from AnnieXMedia.core.dir import DOWNLOAD_DIR
 from AnnieXMedia.utils.tuning import CHUNK_SIZE
-from config import API_KEY, API_URL, MEDIA_CHANNEL_ID, DB_URI
 from AnnieXMedia.logging import LOGGER as _LOGGER
+from config import API_KEY, API_URL
 
 LOGGER = _LOGGER(__name__)
 
-# Optional Telegram client for t.me links / Media DB channel downloads
+# -----------------------
+# Telegram (Pyrogram bot client)
+# -----------------------
 try:
     from AnnieXMedia import app as TG_APP
 except Exception:
     TG_APP = None
 
+# -----------------------
+# Media DB config (required for Media DB fetch)
+# -----------------------
 try:
-    from pyrogram import errors as tg_errors
+    from config import MEDIA_CHANNEL_ID  # should be int like -100123...
 except Exception:
-    tg_errors = None
+    MEDIA_CHANNEL_ID = None
 
-# Optional DB name / collection overrides (safe defaults)
+# user said: will provide media fetching DB string in config -> use DB_URI
+try:
+    from config import DB_URI
+except Exception:
+    DB_URI = None
+
+# Optional overrides if your db/collection names differ
 try:
     from config import MEDIA_DB_NAME
 except Exception:
@@ -41,49 +53,6 @@ try:
     from config import MEDIA_COLLECTION_NAME
 except Exception:
     MEDIA_COLLECTION_NAME = "medias"
-
-# Single shared mongo client
-_MONGO_CLIENT: Optional[AsyncIOMotorClient] = None
-
-
-def _get_media_collection():
-    """
-    Returns the motor collection used for media index.
-    DB and collection can be overridden by config:
-      - DB_URI (required)
-      - MEDIA_DB_NAME (optional, default 'arcapi')
-      - MEDIA_COLLECTION_NAME (optional, default 'medias')
-    """
-    global _MONGO_CLIENT
-    if not DB_URI:
-        return None
-    if _MONGO_CLIENT is None:
-        _MONGO_CLIENT = AsyncIOMotorClient(DB_URI)
-    db = _MONGO_CLIENT[MEDIA_DB_NAME]
-    return db[MEDIA_COLLECTION_NAME]
-
-
-async def is_media(track_id: str, isVideo: bool = False) -> bool:
-    col = _get_media_collection()
-    if col is None:
-        return False
-    doc = await col.find_one({"track_id": track_id, "isVideo": isVideo}, {"_id": 1})
-    return bool(doc)
-
-
-async def get_media_id(track_id: str, isVideo: bool = False) -> Optional[int]:
-    col = _get_media_collection()
-    if col is None:
-        return None
-    doc = await col.find_one(
-        {"track_id": track_id, "isVideo": isVideo},
-        {"message_id": 1},
-    )
-    if not doc:
-        return None
-    mid = doc.get("message_id")
-    return int(mid) if mid is not None else None
-
 
 # -----------------------
 # STATS
@@ -106,7 +75,6 @@ DOWNLOAD_STATS: Dict[str, int] = {
     "tg_fail": 0,
     "cdn_fail": 0,
     "hard_cycle_retries": 0,
-    # Media DB stats
     "media_db_hit": 0,
     "media_db_miss": 0,
     "media_db_fail": 0,
@@ -139,23 +107,23 @@ NO_CANDIDATE_WAIT = 4
 CDN_RETRIES = 5
 CDN_RETRY_DELAY = 2
 
-# -----------------------
-# COMPLETE CYCLE TIMEOUT
-# -----------------------
-# Whole flow timeout: MediaDB attempt + V2 attempt combined
+# Whole flow timeout: MediaDB attempt + V2 attempt
 CYCLE_TIMEOUT_SEC = 120
+
 
 # -----------------------
 # Regex / helpers
 # -----------------------
 YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 YOUTUBE_ID_IN_URL_RE = re.compile(r"""(?x)(?:v=|\/)([A-Za-z0-9_-]{11})|youtu\.be\/([A-Za-z0-9_-]{11})""")
-TG_LINK_RE = re.compile(r"https?://t\.me/(?:(c)/(\d+)/(\d+)|([^/]+)/(\d+))", re.IGNORECASE)
 
 _inflight: Dict[str, asyncio.Future] = {}
 _inflight_lock = asyncio.Lock()
+
 _session: Optional[aiohttp.ClientSession] = None
 _session_lock = asyncio.Lock()
+
+_MONGO_CLIENT: Optional[AsyncIOMotorClient] = None
 
 
 class V2HardAPIError(Exception):
@@ -182,11 +150,8 @@ def extract_video_id(link: str) -> str:
     return ""
 
 
-def _as_download_dir(path: str) -> str:
-    p = str(Path(path).resolve())
-    if not p.endswith(os.sep):
-        p += os.sep
-    return p
+def _ensure_dir(p: str) -> None:
+    os.makedirs(p, exist_ok=True)
 
 
 def _resolve_if_dir(download_result: str) -> Optional[str]:
@@ -217,6 +182,40 @@ async def get_http_session() -> aiohttp.ClientSession:
         return _session
 
 
+def _get_media_collection():
+    global _MONGO_CLIENT
+    if not DB_URI:
+        return None
+    if _MONGO_CLIENT is None:
+        _MONGO_CLIENT = AsyncIOMotorClient(DB_URI)
+    db = _MONGO_CLIENT[MEDIA_DB_NAME]
+    return db[MEDIA_COLLECTION_NAME]
+
+
+async def is_media(track_id: str, isVideo: bool = False) -> bool:
+    col = _get_media_collection()
+    if col is None:
+        return False
+    doc = await col.find_one({"track_id": track_id, "isVideo": isVideo}, {"_id": 1})
+    return bool(doc)
+
+
+async def get_media_id(track_id: str, isVideo: bool = False) -> Optional[int]:
+    col = _get_media_collection()
+    if col is None:
+        return None
+    doc = await col.find_one({"track_id": track_id, "isVideo": isVideo}, {"message_id": 1})
+    if not doc:
+        return None
+    mid = doc.get("message_id")
+    if mid is None:
+        return None
+    try:
+        return int(mid)
+    except Exception:
+        return None
+
+
 def _extract_candidate(obj: Any) -> Optional[str]:
     if obj is None:
         return None
@@ -230,19 +229,14 @@ def _extract_candidate(obj: Any) -> Optional[str]:
         if isinstance(job, dict):
             res = job.get("result")
             if isinstance(res, dict):
-                pub = res.get("public_url")
-                if isinstance(pub, str) and pub.strip():
-                    return pub.strip()
-                for k in ("cdnurl", "download_url", "url", "tg_link", "telegram_link", "message_link"):
+                for k in ("public_url", "cdnurl", "download_url", "url", "tg_link", "telegram_link", "message_link"):
                     v = res.get(k)
                     if isinstance(v, str) and v.strip():
                         return v.strip()
-
         for k in ("public_url", "cdnurl", "download_url", "url", "tg_link", "telegram_link", "message_link"):
             v = obj.get(k)
             if isinstance(v, str) and v.strip():
                 return v.strip()
-
         for wrap in ("result", "results", "data", "items", "payload", "message"):
             v = obj.get(wrap)
             if v:
@@ -266,6 +260,7 @@ def _normalize_candidate_to_url(candidate: str) -> Optional[str]:
     if c.startswith(("http://", "https://")):
         return c
     if c.startswith("/"):
+        # ignore local paths
         if c.startswith("/root") or c.startswith("/home"):
             return None
         return f"{API_URL.rstrip('/')}{c}"
@@ -297,6 +292,7 @@ async def _download_from_cdn(cdn_url: str, out_path: str) -> Optional[str]:
                         continue
                     return None
 
+                _ensure_dir(str(Path(out_path).parent))
                 async with aiofiles.open(out_path, "wb") as f:
                     async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
                         if not chunk:
@@ -318,61 +314,47 @@ async def _download_from_cdn(cdn_url: str, out_path: str) -> Optional[str]:
                 continue
             return None
         except Exception:
+            _inc("network_fail")
             return None
 
     return None
 
 
-async def _download_from_telegram(tme_url: str) -> Optional[str]:
-    if TG_APP is None or tg_errors is None:
-        return None
-
-    m = TG_LINK_RE.match(tme_url)
-    if not m:
-        return None
-
-    if m.group(1):  # /c/<id>/<msg>
-        channel_id = m.group(2)
-        chat_id = int(f"-100{channel_id}")
-        msg_id = int(tme_url.rstrip("/").split("/")[-1])
-    else:
-        chat_id = m.group(4)
-        msg_id = int(m.group(5))
-
-    try:
-        dl_dir = _as_download_dir(DOWNLOAD_DIR)
-        msg = await TG_APP.get_messages(chat_id=chat_id, message_ids=msg_id)
-        res = await msg.download(file_name=dl_dir)
-        fixed = _resolve_if_dir(res)
-        if fixed and Path(fixed).exists():
-            return fixed
-        return None
-    except Exception:
-        return None
-
-
 # -----------------------
-# MEDIA DB FETCH
+# MEDIA DB FETCH (FIXED + VERBOSE PRINTS)
 # -----------------------
 async def _download_from_media_db(track_id: str, is_video: bool) -> Optional[str]:
     """
-    1) check is_media(track_id, isVideo)
-    2) get_media_id(...)
-    3) download that message from MEDIA_CHANNEL_ID
+    Uses:
+      - MongoDB via DB_URI (collection medias)
+      - Telegram channel MEDIA_CHANNEL_ID
+    Downloads file to DOWNLOAD_DIR
     """
     if not track_id:
+        print("[MEDIA_DB] ❌ track_id empty")
         return None
+
     if TG_APP is None:
+        print("[MEDIA_DB] ❌ TG_APP not available (pyrogram app import failed)")
         return None
-    if not MEDIA_CHANNEL_ID:
-        return None
+
     if not DB_URI:
-        # DB not configured
+        print("[MEDIA_DB] ❌ DB_URI missing in config")
+        return None
+
+    if not MEDIA_CHANNEL_ID:
+        print("[MEDIA_DB] ❌ MEDIA_CHANNEL_ID missing in config")
+        return None
+
+    try:
+        ch_id = int(MEDIA_CHANNEL_ID)
+    except Exception:
+        print(f"[MEDIA_DB] ❌ MEDIA_CHANNEL_ID not int: {MEDIA_CHANNEL_ID!r}")
         return None
 
     ext = "mp4" if is_video else "mp3"
 
-    # Support multiple key styles (some DBs store track_id with ext)
+    # try several keys (your DB might store with ext)
     keys_to_try = [
         f"{track_id}.{ext}",
         track_id,
@@ -380,55 +362,79 @@ async def _download_from_media_db(track_id: str, is_video: bool) -> Optional[str
         f"{track_id}_{'v' if is_video else 'a'}.{ext}",
     ]
 
+    msg_id: Optional[int] = None
+    used_key: Optional[str] = None
+
     try:
-        msg_id: Optional[int] = None
         for k in keys_to_try:
             if await is_media(k, isVideo=is_video):
                 msg_id = await get_media_id(k, isVideo=is_video)
+                used_key = k
                 break
 
         if not msg_id:
             _inc("media_db_miss")
+            print(f"[MEDIA_DB] ❌ MISS type={'video' if is_video else 'audio'} track_id={track_id}")
             return None
 
         _inc("media_db_hit")
+        print(f"[MEDIA_DB] ✅ HIT type={'video' if is_video else 'audio'} track_id={track_id} key={used_key} msg_id={msg_id}")
 
-        dl_dir = _as_download_dir(DOWNLOAD_DIR)
-        out_path = os.path.join(dl_dir, f"{track_id}.{ext}")
+        out_dir = str(Path(DOWNLOAD_DIR))
+        _ensure_dir(out_dir)
 
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-            return out_path
+        final_path = os.path.join(out_dir, f"{track_id}.{ext}")
+        tmp_path = final_path + ".temp"
 
-        msg = await TG_APP.get_messages(chat_id=int(MEDIA_CHANNEL_ID), message_ids=int(msg_id))
+        # already present
+        if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+            print(f"[MEDIA_DB] ✅ ALREADY_ON_DISK -> {final_path}")
+            return final_path
+
+        # fetch message
+        msg = await TG_APP.get_messages(ch_id, msg_id)
         if not msg:
             _inc("media_db_fail")
+            print(f"[MEDIA_DB] ❌ FAIL: message not found in channel {ch_id} for msg_id={msg_id}")
             return None
 
-        res = await msg.download(file_name=dl_dir)
-        fixed = _resolve_if_dir(res)
+        # download using app.download_media (more reliable)
+        dl_res = await TG_APP.download_media(msg, file_name=tmp_path)
+        fixed = _resolve_if_dir(dl_res) if isinstance(dl_res, str) else None
+
         if not fixed or not os.path.exists(fixed) or os.path.getsize(fixed) <= 0:
             _inc("media_db_fail")
+            print(f"[MEDIA_DB] ❌ FAIL: download_media returned bad file: {fixed}")
+            with contextlib.suppress(Exception):
+                if tmp_path and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
             return None
 
-        # Normalize to {track_id}.{ext}
+        # normalize to final filename
         try:
-            if fixed != out_path:
-                os.replace(fixed, out_path)
-                fixed = out_path
+            if fixed != final_path:
+                os.replace(fixed, final_path)
         except Exception:
-            pass
+            # if rename fails, still use fixed
+            final_path = fixed
 
-        if os.path.exists(fixed) and os.path.getsize(fixed) > 0:
-            return fixed
+        if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+            print(f"[MEDIA_DB] ✅ DOWNLOADED -> {final_path}")
+            return final_path
 
         _inc("media_db_fail")
+        print(f"[MEDIA_DB] ❌ FAIL: file empty after download: {final_path}")
         return None
 
-    except Exception:
+    except Exception as e:
         _inc("media_db_fail")
+        print(f"[MEDIA_DB] ❌ EXCEPTION: {type(e).__name__}: {e}")
         return None
 
 
+# -----------------------
+# V2 API
+# -----------------------
 async def _v2_request_json(endpoint: str, params: Dict[str, Any]) -> Optional[Any]:
     if not API_URL or not API_KEY:
         return None
@@ -441,11 +447,7 @@ async def _v2_request_json(endpoint: str, params: Dict[str, Any]) -> Optional[An
     for attempt in range(1, V2_HTTP_RETRIES + 1):
         try:
             session = await get_http_session()
-            async with session.get(
-                url,
-                params=params,
-                headers={"X-API-Key": API_KEY, "Accept": "application/json"},
-            ) as resp:
+            async with session.get(url, params=params, headers={"X-API-Key": API_KEY, "Accept": "application/json"}) as resp:
                 text = await resp.text()
                 try:
                     data = await resp.json(content_type=None)
@@ -456,10 +458,7 @@ async def _v2_request_json(endpoint: str, params: Dict[str, Any]) -> Optional[An
                     return data
 
                 if resp.status in (401, 403):
-                    if resp.status == 401:
-                        _inc("hard_fail_401")
-                    else:
-                        _inc("hard_fail_403")
+                    _inc("hard_fail_401" if resp.status == 401 else "hard_fail_403")
                     raise V2HardAPIError(resp.status, text)
 
                 if 500 <= resp.status <= 599:
@@ -484,7 +483,7 @@ async def _v2_request_json(endpoint: str, params: Dict[str, Any]) -> Optional[An
 
 
 async def v2_download(link: str, media_type: str) -> Optional[str]:
-    is_video = media_type == "video"
+    is_video = (media_type == "video")
     vid = extract_video_id(link)
     query = vid or link
 
@@ -542,15 +541,6 @@ async def v2_download(link: str, media_type: str) -> Optional[str]:
                 continue
             return None
 
-        if candidate.startswith(("http://t.me", "https://t.me")):
-            path = await _download_from_telegram(candidate)
-            if not path:
-                _inc("tg_fail")
-                if cycle < V2_DOWNLOAD_CYCLES:
-                    await asyncio.sleep(2)
-                    continue
-            return path
-
         normalized = _normalize_candidate_to_url(candidate)
         if not normalized:
             _inc("no_candidate")
@@ -561,7 +551,7 @@ async def v2_download(link: str, media_type: str) -> Optional[str]:
 
         ext = _guess_ext_from_url(normalized, is_video=is_video)
         base_name = vid if vid else uuid.uuid4().hex[:10]
-        out_path = os.path.join(DOWNLOAD_DIR, f"{base_name}.{ext}")
+        out_path = os.path.join(str(Path(DOWNLOAD_DIR)), f"{base_name}.{ext}")
 
         if os.path.exists(out_path):
             return out_path
@@ -577,6 +567,9 @@ async def v2_download(link: str, media_type: str) -> Optional[str]:
     return None
 
 
+# -----------------------
+# Deduplicate in-flight requests
+# -----------------------
 async def deduplicate_download(key: str, runner):
     async with _inflight_lock:
         if fut := _inflight.get(key):
@@ -595,9 +588,12 @@ async def deduplicate_download(key: str, runner):
             _inflight.pop(key, None)
 
 
+# -----------------------
+# Public function
+# -----------------------
 async def media_download(link: str, type: str, title: str = "") -> Optional[str]:
     """
-    FINAL FLOW (as requested):
+    FLOW:
       1) Try Media DB first (Mongo via DB_URI + TG Media Channel)
       2) If not found -> try V2
       3) Whole cycle timeout = 120s
@@ -613,7 +609,7 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
         is_video = (type == "video")
         is_audio = (type == "audio")
 
-        # 1) Media DB first (only if we can extract a track id)
+        # 1) Media DB first
         if vid:
             db_path = await _download_from_media_db(vid, is_video=is_video)
             if db_path and os.path.exists(db_path):
@@ -623,6 +619,7 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
                 else:
                     _inc("success_video")
                 LOGGER.info(f"MEDIA_DB_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{db_path}'")
+                print(f"[DOWNLOADER] ✅ MEDIA_DB SUCCESS {type} -> {db_path}")
                 return db_path
 
         # 2) V2 fallback
@@ -634,6 +631,7 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
             else:
                 _inc("success_video")
             LOGGER.info(f"V2_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{v2_path}'")
+            print(f"[DOWNLOADER] ✅ V2 SUCCESS {type} -> {v2_path}")
             return v2_path
 
         _inc("failed")
@@ -642,13 +640,13 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
         else:
             _inc("failed_video")
         LOGGER.warning(f"DOWNLOAD_FAILED type={type} title='{title or 'Unknown'}' link='{link}' reason='not_found'")
+        print(f"[DOWNLOADER] ❌ FAILED {type} -> {link}")
         return None
 
     async def run():
         try:
             return await asyncio.wait_for(_cycle(), timeout=CYCLE_TIMEOUT_SEC)
         except asyncio.TimeoutError:
-            # As you requested: timeout => return None
             _inc("timeout_fail")
             _inc("failed")
             if type == "audio":
@@ -658,6 +656,7 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
             LOGGER.warning(
                 f"DOWNLOAD_TIMEOUT type={type} title='{title or 'Unknown'}' link='{link}' timeout={CYCLE_TIMEOUT_SEC}s"
             )
+            print(f"[DOWNLOADER] ⏳ TIMEOUT {type} ({CYCLE_TIMEOUT_SEC}s) -> {link}")
             return None
 
     return await deduplicate_download(key, run)
