@@ -22,11 +22,11 @@ def generate_help_buttons(_, start: int, end: int, current_page: int):
 
 
 def first_page(_):
-    buttons = generate_help_buttons(_, 1, 15, current_page=1)
+    buttons = generate_help_buttons(_, 1, 5, current_page=1)
     buttons.append(
         [
-            InlineKeyboardButton(text="๏ ᴍᴇɴᴜ ๏", callback_data="back_to_main"),
-            InlineKeyboardButton(text="๏ ɴᴇxᴛ ๏", callback_data="help_next_2")
+            InlineKeyboardButton(text="Home", callback_data="back_to_main"),
+            InlineKeyboardButton(text="Close", callback_data="close")
         ]
     )
     return InlineKeyboardMarkup(buttons)
