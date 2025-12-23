@@ -27,7 +27,7 @@ def first_page(_):
 
     buttons.append(
         [
-            InlineKeyboardButton(text=_["HOME_BUTTON"], callback_data="back_to_main"),
+            InlineKeyboardButton(text="Back", callback_data="back_to_main"),
             InlineKeyboardButton(text=_["CLOSE_BUTTON"], callback_data="close"),
         ]
     )
