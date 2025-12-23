@@ -6,7 +6,7 @@ from AnnieXMedia import app
 
 def generate_help_buttons(_, start: int, end: int):
     """Create a grid of three buttons per row (single page only)."""
-    buttons, per_row = [], 3
+    buttons, per_row = [], 2
 
     for idx, i in enumerate(range(start, end + 1)):
         if idx % per_row == 0:
@@ -23,7 +23,7 @@ def generate_help_buttons(_, start: int, end: int):
 
 
 def first_page(_):
-    buttons = generate_help_buttons(_, 1, 6)
+    buttons = generate_help_buttons(_, 1, 4)
 
     buttons.append(
         [
