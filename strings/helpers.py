@@ -2,75 +2,92 @@
 # ───────────────────────────────────────────────────────────────────────
 
 # ── inside helpers.py ────────────────────────────────────────────────
-HELP_1_PROMO = """
-<b><u>ᴘʀᴏᴍᴏᴛɪᴏɴ ⁄ ᴅᴇᴍᴏᴛɪᴏɴ</u></b>
-ᴀᴠᴀɪʟᴀʙʟᴇ ᴄᴏᴍᴍᴀɴᴅꜱ ꜰᴏʀ ᴍᴏᴅᴇʀᴀᴛɪᴏɴ, ᴘʀᴏᴍᴏᴛɪᴏɴ (ᴀᴅᴍɪɴꜱ ᴏɴʟʏ):
+HELP_1 = """
+<b><u>🎚️ ADMIN COMMANDS</u></b>
+(Admins & Authorized Users)
 
-• /promote <ᴜꜱᴇʀ>: ɢʀᴀɴᴛꜱ ʟɪᴍɪᴛᴇᴅ ᴀᴅᴍɪɴ ʀɪɢʜᴛꜱ. (ᴄᴀɴ ᴜꜱᴇ ʀᴇᴘʟʏ, @ᴜꜱᴇʀɴᴀᴍᴇ ᴏʀ ID)
-• /fullpromote <ᴜꜱᴇʀ>: ɢʀᴀɴᴛꜱ ᴀʟʟ ᴘᴏꜱꜱɪʙʟᴇ ᴀᴅᴍɪɴ ᴘᴇʀᴍɪꜱꜱɪᴏɴꜱ ᴛᴏ ᴛʜᴇ ᴜꜱᴇʀ.
-• /demote <ᴜꜱᴇʀ>: ʀᴇᴍᴏᴠᴇꜱ ᴀʟʟ ᴀᴅᴍɪɴ ᴘʀɪᴠɪʟᴇɢᴇꜱ ꜰʀᴏᴍ ᴛʜᴇ ᴜꜱᴇʀ.
-• /tempadmin <ᴜꜱᴇʀ> x(ᴍ /ʜ /ᴅ): ᴛᴇᴍᴘᴏʀᴀʀʏ ᴘʀᴏᴍᴏᴛɪᴏɴ ꜰᴏʀ x ᴛɪᴍᴇ. ᴀᴜᴛᴏ-ᴅᴇᴍᴏᴛᴇꜱ ᴀꜰᴛᴇʀ x. (ᴇ.ɢ. • /tempadmin @ᴜꜱᴇʀ 3ʜ)
+<b>Playback Control</b>
+• /pause – Pause the current stream  
+• /resume – Resume paused stream  
+• /skip – Skip current track  
+• /end or /stop – Stop stream & clear queue  
 
-<b>➤ ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅꜱ ꜱᴜᴘᴘᴏʀᴛ:</b> ʀᴇᴘʟʏ, @ᴜꜱᴇʀɴᴀᴍᴇ, ᴏʀ ᴜꜱᴇʀ ID
+<b>Queue & Player</b>
+• /queue – Show queued tracks  
+• /player – Interactive player panel  
 
+<b>Loop Control</b>
+• /loop enable | disable  
+• /loop <count> – Loop current track  
+
+<b>Seek Control</b>
+• /seek <seconds> – Forward seek  
+• /seekback <seconds> – Backward seek  
+
+<b>Shuffle</b>
+• /shuffle – Shuffle the queue  
+
+<b>Speed Control</b>
+• /speed <rate>  
+• /playback <rate>  
+
+<b>Channel Playback</b>
+• /cplay – Play audio in linked channel  
+• /cvplay – Play video in linked channel  
+• /cplayforce /cvplayforce  
+• /channelplay <chat_id | disable>  
+
+<b>Authorization</b>
+• /auth <user> – Grant music admin access  
+• /unauth <user> – Remove music admin access  
+• /authlist – List authorized users  
 """
-
-HELP_1_PUNISH = """
-<b><u>ᴘᴜɴɪꜱʜᴍᴇɴᴛ ⁄ ᴘᴏʟɪᴄɪɴɢ</u></b>
-ᴀᴠᴀɪʟᴀʙʟᴇ ᴄᴏᴍᴍᴀɴᴅꜱ ꜰᴏʀ ᴍᴏᴅᴇʀᴀᴛɪᴏɴ, ᴘʀᴏᴍᴏᴛɪᴏɴ (ᴀᴅᴍɪɴꜱ ᴏɴʟʏ):
-
- • /ban <ᴜꜱᴇʀ>: ᴘᴇʀᴍᴀɴᴇɴᴛʟʏ ʙᴀɴꜱ ᴛʜᴇ ᴜꜱᴇʀ ꜰʀᴏᴍ ᴛʜᴇ ɢʀᴏᴜᴘ.
- • /unban <ᴜꜱᴇʀ>: ʀᴇᴠᴏᴋᴇꜱ ᴀ ʙᴀɴ.
- • /kick <ᴜꜱᴇʀ>: ᴛᴇᴍᴘᴏʀᴀʀɪʟʏ ʀᴇᴍᴏᴠᴇꜱ ᴀ ᴜꜱᴇʀ. (ᴀᴜᴛᴏ-ᴜɴʙᴀɴ ᴀꜰᴛᴇʀ 2ꜱ)
- • /kickme: ꜱᴇʟꜰ-ᴇᴊᴇᴄᴛ ꜰʀᴏᴍ ɢʀᴏᴜᴘ. (ᴀᴜᴛᴏ-ᴜɴʙᴀɴ ᴀꜰᴛᴇʀ 3ꜱ)
- • /mute <ᴜꜱᴇʀ>: ᴘʀᴇᴠᴇɴᴛꜱ ᴀ ᴜꜱᴇʀ ꜰʀᴏᴍ ꜱᴇɴᴅɪɴɢ ᴍᴇꜱꜱᴀɢᴇꜱ.
- • /tmute <ᴜꜱᴇʀ> x(ᴍ /ʜ /ᴅ): ᴛᴇᴍᴘ ᴍᴜᴛᴇ ꜰᴏʀ x ᴛɪᴍᴇ.
- • /unmute <ᴜꜱᴇʀ>: ʟɪꜰᴛꜱ ᴀ ᴍᴜᴛᴇ.
- • /tban <ᴜꜱᴇʀ> x(ᴍ /ʜ /ᴅ): ᴛᴇᴍᴘᴏʀᴀʀʏ ʙᴀɴ ᴡɪᴛʜ ᴅᴜʀᴀᴛɪᴏɴ.
- • /sban <ᴜꜱᴇʀ>: ꜱɪʟᴇɴᴛ ʙᴀɴ ᴡɪᴛʜᴏᴜᴛ ɴᴏᴛɪꜰɪᴄᴀᴛɪᴏɴ.
- • /dban (ʀᴇᴘʟʏ ᴏɴʟʏ): ᴅᴇʟᴇᴛᴇꜱ ᴀ ᴍᴇꜱꜱᴀɢᴇ ᴀɴᴅ ʙᴀɴꜱ ᴛʜᴇ ꜱᴇɴᴅᴇʀ.
-
- <b>➤ ᴀʟʟ ᴄᴏᴍᴍᴀɴᴅꜱ ꜱᴜᴘᴘᴏʀᴛ:</b> ʀᴇᴘʟʏ, @ᴜꜱᴇʀɴᴀᴍᴇ, ᴏʀ ᴜꜱᴇʀ ID
-
-"""
-# ────────────────────────────────────────────────────────────────────
 
 
 # ───────────────────────────────────────────────────────────────────────
 HELP_2 = """
-<b><u>ᴀᴅᴍɪɴ ᴄᴏɴᴛʀᴏʟ :</u></b>
-ᴊᴜꜱᴛ ᴀᴅᴅ <b>c</b> ᴀᴛ ᴛʜᴇ ʙᴇɢɪɴɴɪɴɢ ᴏꜰ ᴛʜᴇ ᴄᴏᴍᴍᴀɴᴅꜱ ᴛᴏ ᴜꜱᴇ ᴛʜᴇᴍ ꜰᴏʀ ᴛʜᴇ ᴄʜᴀɴɴᴇʟ.
+<b><u>🎵 USER COMMANDS</u></b>
 
-• /pause : ᴘᴀᴜꜱᴇ ᴛʜᴇ ᴄᴜʀʀᴇɴᴛ ᴘʟᴀʏɪɴɢ ꜱᴛʀᴇᴀᴍ.
-• /resume : ʀᴇꜱᴜᴍᴇ ᴛʜᴇ ᴘᴀᴜꜱᴇᴅ ꜱᴛʀᴇᴀᴍ.
-• /skip : ꜱᴋɪᴘ ᴛʜᴇ ᴄᴜʀʀᴇɴᴛ ᴘʟᴀʏɪɴɢ ꜱᴛʀᴇᴀᴍ ᴀɴᴅ ꜱᴛᴀʀᴛ ꜱᴛʀᴇᴀᴍɪɴɢ ᴛʜᴇ ɴᴇxᴛ ᴛʀᴀᴄᴋ ɪɴ ᴛʜᴇ ǫᴜᴇᴜᴇ.
-• /end ᴏʀ • /stop : ᴄʟᴇᴀʀꜱ ᴛʜᴇ ǫᴜᴇᴜᴇ ᴀɴᴅ ᴇɴᴅꜱ ᴛʜᴇ ᴄᴜʀʀᴇɴᴛ ᴘʟᴀʏɪɴɢ ꜱᴛʀᴇᴀᴍ.
-• /player : ɢᴇᴛ ᴀɴ ɪɴᴛᴇʀᴀᴄᴛɪᴠᴇ ᴘʟᴀʏᴇʀ ᴘᴀɴᴇʟ.
-• /queue : ꜱʜᴏᴡꜱ ᴛʜᴇ ǫᴜᴇᴜᴇᴅ ᴛʀᴀᴄᴋꜱ ʟɪꜱᴛ.
+<b>Play Music</b>
+• /play – Play requested audio  
+• /vplay – Play requested video  
+• /playforce – Force audio play  
+• /vplayforce – Force video play  
+
+<b>Info</b>
+• /start – Start the music bot  
+• /help – Open help menu  
+• /ping – Bot latency  
+• /stats – Bot statistics  
 """
 
 # ───────────────────────────────────────────────────────────────────────
 HELP_3 = """
-<b><u>ᴀᴜᴛʜ ᴜꜱᴇʀꜱ :</b></u>
+<b><u>👑 OWNER COMMANDS</u></b>
 
-ᴀᴜᴛʜ ᴜꜱᴇʀꜱ ᴄᴀɴ ᴜꜱᴇ ᴀᴅᴍɪɴ ʀɪɢʜᴛꜱ ɪɴ ᴛʜᴇ ʙᴏᴛ ᴡɪᴛʜᴏᴜᴛ ᴀᴅᴍɪɴ ʀɪɢʜᴛꜱ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ.
-
-• /auth [ᴜꜱᴇʀɴᴀᴍᴇ• /ᴜꜱᴇʀ_ɪᴅ] : ᴀᴅᴅ ᴀ ᴜꜱᴇʀ ᴛᴏ ᴛʜᴇ ᴀᴜᴛʜ ʟɪꜱᴛ ᴏꜰ ᴛʜᴇ ʙᴏᴛ.
-• /unauth [ᴜꜱᴇʀɴᴀᴍᴇ• /ᴜꜱᴇʀ_ɪᴅ] : ʀᴇᴍᴏᴠᴇ ᴀ ᴜꜱᴇʀ ꜰʀᴏᴍ ᴛʜᴇ ᴀᴜᴛʜ ᴜꜱᴇʀꜱ ʟɪꜱᴛ.
-• /authusers : ꜱʜᴏᴡꜱ ᴛʜᴇ ʟɪꜱᴛ ᴏꜰ ᴀᴜᴛʜ ᴜꜱᴇʀꜱ ᴏꜰ ᴛʜᴇ ɢʀᴏᴜᴘ.
-
+• /restart – Restart the bot  
+• /update – Pull latest code  
+• /maintenance enable | disable  
+• /logs – Fetch system logs  
+• /logger enable | disable  
 """
 
 # ───────────────────────────────────────────────────────────────────────
 HELP_4 = """
-<u><b>ᴄʜᴀᴛ ʙʟᴀᴄᴋʟɪꜱᴛ ꜰᴇᴀᴛᴜʀᴇ :</b></u> [ᴏɴʟʏ ꜰᴏʀ ꜱᴜᴅᴏᴇʀꜱ]
+<b><u>⚠️ SUDO COMMANDS</u></b>
 
-ʀᴇꜱᴛʀɪᴄᴛ ᴜɴᴡᴀɴᴛᴇᴅ ᴄʜᴀᴛꜱ ꜰʀᴏᴍ ᴜꜱɪɴɢ ᴏᴜʀ ᴘʀᴇᴄɪᴏᴜꜱ ʙᴏᴛ.
+<b>Chat Control</b>
+• /blacklistchat <chat_id>  
+• /whitelistchat <chat_id>  
+• /blacklistedchats  
 
-• /blacklistchat [ᴄʜᴀᴛ ɪᴅ] : ʙʟᴀᴄᴋʟɪꜱᴛ ᴀ ᴄʜᴀᴛ ꜰʀᴏᴍ ᴜꜱɪɴɢ ᴛʜᴇ ʙᴏᴛ.
-• /whitelistchat [ᴄʜᴀᴛ ɪᴅ] : ᴡʜɪᴛᴇʟɪꜱᴛ ᴛʜᴇ ʙʟᴀᴄᴋʟɪꜱᴛᴇᴅ ᴄʜᴀᴛ.
-• /blacklistedchats : ꜱʜᴏᴡꜱ ᴛʜᴇ ʟɪꜱᴛ ᴏꜰ ʙʟᴀᴄᴋʟɪꜱᴛᴇᴅ ᴄʜᴀᴛꜱ.
+<b>User Blocking</b>
+• /block <user>  
+• /unblock <user>  
+• /blockedusers  
 
+<b>Broadcast</b>
+• /broadcast <message>  
 """
 
 # ───────────────────────────────────────────────────────────────────────
