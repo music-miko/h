@@ -2,10 +2,6 @@
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from AnnieXMedia import app
 
-
-TOTAL_SECTIONS = 29
-
-
 def generate_help_buttons(_, start: int, end: int, current_page: int):
     """Create a grid of three buttons per row for the given range."""
     buttons, per_row = [], 3
@@ -30,40 +26,6 @@ def first_page(_):
         ]
     )
     return InlineKeyboardMarkup(buttons)
-
-
-def second_page(_):
-    buttons = generate_help_buttons(_, 16, TOTAL_SECTIONS, current_page=2)
-    buttons.append(
-        [
-            InlineKeyboardButton(text="๏ ʙᴀᴄᴋ ๏", callback_data="help_prev_1"),
-            InlineKeyboardButton(text="๏ ᴍᴇɴᴜ ๏", callback_data="back_to_main")
-        ]
-    )
-    return InlineKeyboardMarkup(buttons)
-
-
-def action_sub_menu(_, current_page: int):
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    text=_[ "H_B_S_1" ],
-                    callback_data="action_prom_1"
-                ),
-                InlineKeyboardButton(
-                    text=_[ "H_B_S_2" ],
-                    callback_data="action_pun_1"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=_["BACK_BUTTON"],
-                    callback_data=f"help_back_{current_page}"
-                )
-            ]
-        ]
-    )
 
 
 def help_back_markup(_, current_page: int):
