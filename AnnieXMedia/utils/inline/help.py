@@ -18,7 +18,7 @@ def generate_help_buttons(_, start: int, end: int, current_page: int):
 
 
 def first_page(_):
-    buttons = generate_help_buttons(_, 1, 5, current_page=1)
+    buttons = generate_help_buttons(_, 1, 6, current_page=1)
     buttons.append(
         [
             InlineKeyboardButton(text="Home", callback_data="back_to_main"),
