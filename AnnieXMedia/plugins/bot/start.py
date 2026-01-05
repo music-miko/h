@@ -5,7 +5,7 @@ import time
 from pyrogram import filters
 from pyrogram.enums import ChatType
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
-from youtubesearchpython.__future__ import VideosSearch
+from youtubesearchpython.aio import VideosSearch
 
 import config
 from AnnieXMedia import app
