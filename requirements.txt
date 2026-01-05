@@ -41,5 +41,5 @@ telegraph
 pytgcrypto
 unidecode
 wget
-yt-dlp[default]==2025.12.8
+yt-dlp==2025.10.22
 youtube-search-python==1.6.6
