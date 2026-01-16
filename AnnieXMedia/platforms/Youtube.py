@@ -1,11 +1,12 @@
 # Authored By Certified Coders © 2025
 import asyncio
+import aiohttp
 import contextlib
 import json
 import os
 import re
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 import yt_dlp
 from pyrogram.enums import MessageEntityType
@@ -44,7 +45,6 @@ def _cookiefile_path() -> Optional[str]:
         with open(path, "rb") as f:
             header = f.read(256)
 
-        # Netscape-style cookie files contain this header line
         if b"Netscape HTTP Cookie File" in header:
             return path
         return None
@@ -71,6 +71,41 @@ async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
         return b"", b"timeout"
 
 
+def _dig(data: Any, *path: Union[str, int]) -> Any:
+    """Python port of the Go 'dig' function."""
+    cur = data
+    for p in path:
+        if isinstance(p, str):
+            if isinstance(cur, dict):
+                cur = cur.get(p)
+            else:
+                return None
+        elif isinstance(p, int):
+            if isinstance(cur, list) and 0 <= p < len(cur):
+                cur = cur[p]
+            else:
+                return None
+        else:
+            return None
+    return cur
+
+
+def _parse_duration(s: str) -> int:
+    """Python port of the Go 'parseDuration' function."""
+    if not s: return 0
+    parts = s.split(":")
+    total = 0
+    mul = 1
+    for part in reversed(parts):
+        try:
+            val = int("".join(filter(str.isdigit, part)))
+            total += val * mul
+            mul *= 60
+        except ValueError:
+            pass
+    return total
+
+
 @capture_internal_err
 async def cached_youtube_search(query: str) -> List[Dict]:
     key = f"q:{query}"
@@ -85,6 +120,7 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         if len(_cache) > YOUTUBE_META_MAX:
             _cache.clear()
 
+    # NOTE: We keep VideosSearch here for legacy cache population
     try:
         data = await VideosSearch(query, limit=1).next()
         result = data.get("result", [])
@@ -140,22 +176,159 @@ class YouTubeAPI:
         prepared = self._prepare_link(maybe_query_or_url)
         if prepared.startswith("http"):
             return prepared
-        data = await cached_youtube_search(prepared)
-        if not data:
+        info = await self._fetch_video_info(prepared)
+        if info and info.get("id"):
+             return self.base_url + info["id"]
+        return None
+
+    # === Internal Search Methods ===
+    def _recursive_parse(self, node: Any, limit: int = 1) -> List[Dict]:
+        """
+        Recursive parser ported from Go's 'parseResults'.
+        Finds videoRenderers deeply nested in the structure.
+        """
+        tracks = []
+        
+        # If list, iterate items
+        if isinstance(node, list):
+            for item in node:
+                tracks.extend(self._recursive_parse(item, limit))
+                if len(tracks) >= limit:
+                    break
+            return tracks
+
+        # If dict, check for videoRenderer
+        if isinstance(node, dict):
+            vr = _dig(node, "videoRenderer")
+            if vr:
+                # Check for LIVE badge
+                is_live = False
+                badges = vr.get("badges", [])
+                for badge in badges:
+                    style = _dig(badge, "metadataBadgeRenderer", "style")
+                    if style == "BADGE_STYLE_TYPE_LIVE_NOW":
+                        is_live = True
+                        break
+                
+                # Extract Data
+                vid_id = vr.get("videoId")
+                title = _dig(vr, "title", "runs", 0, "text")
+                duration_text = _dig(vr, "lengthText", "simpleText")
+
+                if not is_live and vid_id and title and duration_text:
+                    thumb = _dig(vr, "thumbnail", "thumbnails", 0, "url")
+                    
+                    return [{
+                        "id": vid_id,
+                        "title": title,
+                        "duration": duration_text,
+                        "thumbnail": thumb,
+                        "thumbnails": [{"url": thumb}],
+                        "link": f"https://www.youtube.com/watch?v={vid_id}"
+                    }]
+
+            # Recurse into values if not a videoRenderer
+            for value in node.values():
+                tracks.extend(self._recursive_parse(value, limit))
+                if len(tracks) >= limit:
+                    break
+                    
+        return tracks
+
+    async def _raw_youtube_search(self, query: str) -> Optional[Dict]:
+        """
+        Manual implementation of InnerTube search (Go port).
+        """
+        endpoint = "https://www.youtube.com/youtubei/v1/search?key=AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
+        
+        payload = {
+            "context": {
+                "client": {
+                    "clientName": "WEB",
+                    "clientVersion": "2.20250101.01.00", 
+                    "hl": "en",
+                    "gl": "IN",
+                },
+            },
+            "query": query,
+        }
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(endpoint, json=payload) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.json()
+        except Exception:
             return None
-        vid = data[0].get("id")
-        return self.base_url + vid if vid else None
+
+        # Start parsing from the specific root mentioned in Go code
+        root = _dig(
+            data,
+            "contents",
+            "twoColumnSearchResultsRenderer",
+            "primaryContents",
+            "sectionListRenderer",
+            "contents",
+        )
+        
+        results = self._recursive_parse(root, limit=1)
+        return results[0] if results else None
 
     # === Metadata Fetching ===
     @capture_internal_err
     async def _fetch_video_info(self, query: str, *, use_cache: bool = True) -> Optional[Dict]:
+        """
+        Robust fetcher: Cache -> Raw InnerTube API (Go Port) -> yt-dlp Fallback
+        """
         q = self._prepare_link(query)
+        
+        # 1. Try Internal Cache (only for search queries)
         if use_cache and not q.startswith("http"):
             res = await cached_youtube_search(q)
-            return res[0] if res else None
-        data = await VideosSearch(q, limit=1).next()
-        result = data.get("result", [])
-        return result[0] if result else None
+            if res:
+                return res[0]
+
+        # 2. Try Raw InnerTube Request (The Go Port)
+        if not q.startswith("http"):
+            raw_res = await self._raw_youtube_search(q)
+            if raw_res:
+                return raw_res
+
+        # 3. Fallback: yt-dlp (Robust for both URLs and Search)
+        try:
+            search_query = q if q.startswith("http") else f"ytsearch1:{q}"
+            
+            stdout, _ = await _exec_proc(
+                "yt-dlp",
+                *(_cookies_args()),
+                "--dump-json",
+                "--no-warnings",
+                "--ignore-errors",
+                search_query
+            )
+
+            if stdout:
+                info = json.loads(stdout.decode())
+                
+                if "entries" in info:
+                    info = info["entries"][0] if info["entries"] else {}
+
+                if not info:
+                    return None
+
+                return {
+                    "id": info.get("id"),
+                    "title": info.get("title"),
+                    "duration": info.get("duration_string") or str(info.get("duration", 0)),
+                    "thumbnails": [{"url": info.get("thumbnail", "")}],
+                    "thumbnail": info.get("thumbnail", ""),
+                    "link": info.get("webpage_url", q)
+                }
+        except Exception:
+            pass
+
+        return None
 
     @capture_internal_err
     async def is_live(self, link: str) -> bool:
@@ -175,12 +348,9 @@ class YouTubeAPI:
     ) -> Tuple[str, Optional[str], int, str, str]:
         prepared_link = self._prepare_link(link, videoid)
 
-        try:
-            info = await self._fetch_video_info(prepared_link)
-            if not info:
-                raise ValueError("No results from youtubesearchpython (VideosSearch)")
-        except Exception as search_err:
-            raise ValueError("Video not found", {"cause": str(search_err)}) from search_err
+        info = await self._fetch_video_info(prepared_link)
+        if not info:
+            raise ValueError(f"Video not found for: {prepared_link}")
 
         dt = info.get("duration")
         ds = int(time_to_seconds(dt)) if dt else 0
@@ -213,41 +383,11 @@ class YouTubeAPI:
     async def track(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[Dict, str]:
         prepared_link = self._prepare_link(link, videoid)
 
-        try:
-            info = await self._fetch_video_info(prepared_link)
-            if not info:
-                raise ValueError(
-                    f"No results from youtubesearchpython (VideosSearch) "
-                    f"for query/URL: '{prepared_link}'"
-                )
-        except Exception as search_err:
-            yt_link = prepared_link
-            if not yt_link.startswith("http"):
-                yt_link = f"ytsearch1:{prepared_link}"
-
-            stdout, stderr = await _exec_proc(
-                "yt-dlp", *(_cookies_args()), "--dump-json", "--no-warnings", yt_link
-            )
-
-            def _both_failed(details: str) -> ValueError:
-                return ValueError(
-                    f"Both methods failed for '{prepared_link}':\n"
-                    f"  1. youtubesearchpython error: {search_err}\n"
-                    f"{details}"
-                )
-
-            if not stdout:
-                stderr_msg = stderr.decode().strip() if stderr else "Empty response"
-                raise _both_failed(f"  2. yt-dlp error: {stderr_msg}")
-
-            try:
-                info = json.loads(stdout.decode())
-            except json.JSONDecodeError as json_err:
-                raw = stdout.decode()[:400]
-                raise _both_failed(
-                    f"  2. yt-dlp JSON error: {json_err}\n"
-                    f"     Raw: {raw}..."
-                ) from json_err
+        # _fetch_video_info now handles Cache -> Raw API -> yt-dlp fallback internally
+        info = await self._fetch_video_info(prepared_link)
+        
+        if not info:
+            raise ValueError(f"Could not fetch info for '{prepared_link}' via any method.")
 
         thumb = (
             info.get("thumbnail")
@@ -256,13 +396,9 @@ class YouTubeAPI:
 
         details = {
             "title": info.get("title", ""),
-            "link": info.get("webpage_url", prepared_link),
+            "link": info.get("link", prepared_link),
             "vidid": info.get("id", ""),
-            "duration_min": (
-                info.get("duration")
-                if isinstance(info.get("duration"), str)
-                else None
-            ),
+            "duration_min": info.get("duration"),
             "thumb": thumb,
         }
         return details, info.get("id", "")
@@ -366,8 +502,38 @@ class YouTubeAPI:
     async def slider(
         self, link: str, query_type: int, videoid: Union[str, bool, None] = None
     ) -> Tuple[str, Optional[str], str, str]:
-        data = await VideosSearch(self._prepare_link(link, videoid), limit=10).next()
-        results = data.get("result", [])
+        # Slider relies on multiple results. The raw API above is single-result optimized.
+        # We try basic VideosSearch here. If 403, we might need a multi-result Raw or yt-dlp implementation.
+        # For now, we fall back to yt-dlp plain search if VideosSearch fails.
+        
+        try:
+            data = await VideosSearch(self._prepare_link(link, videoid), limit=10).next()
+            results = data.get("result", [])
+        except Exception:
+            query = self._prepare_link(link, videoid)
+            stdout, _ = await _exec_proc(
+                "yt-dlp", 
+                *(_cookies_args()), 
+                "--dump-json", 
+                "--default-search", 
+                "ytsearch10", 
+                "--no-playlist", 
+                query
+            )
+            results = []
+            if stdout:
+                for line in stdout.decode().split("\n"):
+                    if not line: continue
+                    try:
+                        v = json.loads(line)
+                        results.append({
+                            "title": v.get("title"),
+                            "duration": v.get("duration_string"),
+                            "thumbnails": [{"url": v.get("thumbnail")}],
+                            "id": v.get("id")
+                        })
+                    except: pass
+        
         if not results or query_type >= len(results):
             raise IndexError(
                 f"Query type index {query_type} out of range (found {len(results)} results)"
@@ -390,17 +556,10 @@ class YouTubeAPI:
         video: Union[bool, str, None] = None,
         videoid: Union[str, bool, None] = None,
     ) -> Union[Tuple[str, Optional[bool]], Tuple[None, None]]:
-        """
-        Unified download logic:
-        - AUDIO: uses media_download("audio") -> returns (path, True) or (None, None)
-        - VIDEO (non-live): uses media_download("video") -> returns (path, True) or (None, None)
-        - VIDEO (live): uses direct streaming URL via self.video()
-        """
         link = self._prepare_link(link, videoid)
 
         # === VIDEO MODE ===
         if video:
-            # Live streams: must use stream URL
             if await self.is_live(link):
                 status, stream_url = await self.video(link)
                 if status == 1:
