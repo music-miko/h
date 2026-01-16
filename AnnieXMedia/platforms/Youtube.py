@@ -14,18 +14,10 @@ from pyrogram.types import Message
 from youtubesearchpython.aio import VideosSearch, Playlist
 
 from AnnieXMedia.utils.cookie_handler import COOKIE_PATH
-from AnnieXMedia.utils.downloader import media_download   # ✅ UPDATED
+from AnnieXMedia.utils.downloader import media_download
 from AnnieXMedia.utils.errors import capture_internal_err
 from AnnieXMedia.utils.formatters import time_to_seconds
-from AnnieXMedia.utils.tuning import YTDLP_TIMEOUT, YOUTUBE_META_MAX, YOUTUBE_META_TTL
-
-
-# === Caches ===
-_cache: Dict[str, Tuple[float, List[Dict]]] = {}
-_cache_lock = asyncio.Lock()
-_formats_cache: Dict[str, Tuple[float, List[Dict], str]] = {}
-_formats_lock = asyncio.Lock()
-
+from AnnieXMedia.utils.tuning import YTDLP_TIMEOUT
 
 # === Constants ===
 YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
@@ -58,8 +50,13 @@ def _cookies_args() -> List[str]:
 
 
 async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
+    # Force no cache directory for all subprocess calls to save Disk I/O
+    cmd_args = list(args)
+    if "yt-dlp" in cmd_args[0]:
+        cmd_args.insert(1, "--no-cache-dir")
+
     proc = await asyncio.create_subprocess_exec(
-        *args,
+        *cmd_args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -108,30 +105,16 @@ def _parse_duration(s: str) -> int:
 
 @capture_internal_err
 async def cached_youtube_search(query: str) -> List[Dict]:
-    key = f"q:{query}"
-    now = time.time()
-
-    async with _cache_lock:
-        if key in _cache:
-            ts, val = _cache[key]
-            if now - ts < YOUTUBE_META_TTL:
-                return val
-            _cache.pop(key, None)
-        if len(_cache) > YOUTUBE_META_MAX:
-            _cache.clear()
-
-    # NOTE: We keep VideosSearch here for legacy cache population
+    """
+    Stateless wrapper. No longer uses local RAM cache.
+    Always performs a fresh VideosSearch.
+    """
     try:
         data = await VideosSearch(query, limit=1).next()
         result = data.get("result", [])
+        return result
     except Exception:
-        result = []
-
-    if result:
-        async with _cache_lock:
-            _cache[key] = (now, result)
-
-    return result
+        return []
 
 
 # === Main Class ===
@@ -183,10 +166,7 @@ class YouTubeAPI:
 
     # === Internal Search Methods ===
     def _recursive_parse(self, node: Any, limit: int = 1) -> List[Dict]:
-        """
-        Recursive parser ported from Go's 'parseResults'.
-        Finds videoRenderers deeply nested in the structure.
-        """
+        """Recursive parser ported from Go's 'parseResults'."""
         tracks = []
         
         # If list, iterate items
@@ -236,9 +216,7 @@ class YouTubeAPI:
         return tracks
 
     async def _raw_youtube_search(self, query: str) -> Optional[Dict]:
-        """
-        Manual implementation of InnerTube search (Go port).
-        """
+        """Manual implementation of InnerTube search (Go port)."""
         endpoint = "https://www.youtube.com/youtubei/v1/search?key=AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
         
         payload = {
@@ -277,28 +255,25 @@ class YouTubeAPI:
 
     # === Metadata Fetching ===
     @capture_internal_err
-    async def _fetch_video_info(self, query: str, *, use_cache: bool = True) -> Optional[Dict]:
+    async def _fetch_video_info(self, query: str, *, use_cache: bool = False) -> Optional[Dict]:
         """
-        Robust fetcher: Cache -> Raw InnerTube API (Go Port) -> yt-dlp Fallback
+        Robust fetcher: Raw InnerTube API (Go Port) -> yt-dlp Fallback
+        NO CACHING ENABLED.
         """
         q = self._prepare_link(query)
         
-        # 1. Try Internal Cache (only for search queries)
-        if use_cache and not q.startswith("http"):
-            res = await cached_youtube_search(q)
-            if res:
-                return res[0]
-
-        # 2. Try Raw InnerTube Request (The Go Port)
+        # 1. Try Raw InnerTube Request (The Go Port)
+        # We skip the library/cache step entirely now to reduce memory usage
         if not q.startswith("http"):
             raw_res = await self._raw_youtube_search(q)
             if raw_res:
                 return raw_res
 
-        # 3. Fallback: yt-dlp (Robust for both URLs and Search)
+        # 2. Fallback: yt-dlp (Robust for both URLs and Search)
         try:
             search_query = q if q.startswith("http") else f"ytsearch1:{q}"
             
+            # _exec_proc now automatically adds --no-cache-dir
             stdout, _ = await _exec_proc(
                 "yt-dlp",
                 *(_cookies_args()),
@@ -383,7 +358,7 @@ class YouTubeAPI:
     async def track(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[Dict, str]:
         prepared_link = self._prepare_link(link, videoid)
 
-        # _fetch_video_info now handles Cache -> Raw API -> yt-dlp fallback internally
+        # _fetch_video_info now handles Raw API -> yt-dlp fallback internally
         info = await self._fetch_video_info(prepared_link)
         
         if not info:
@@ -407,6 +382,7 @@ class YouTubeAPI:
     @capture_internal_err
     async def video(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[int, str]:
         link = self._prepare_link(link, videoid)
+        # _exec_proc adds --no-cache-dir automatically
         stdout, stderr = await _exec_proc(
             "yt-dlp",
             *(_cookies_args()),
@@ -451,16 +427,17 @@ class YouTubeAPI:
     async def formats(
         self, link: str, videoid: Union[str, bool, None] = None
     ) -> Tuple[List[Dict], str]:
+        """
+        Fetches available formats.
+        NO CACHING. Always fetches fresh data.
+        """
         link = self._prepare_link(link, videoid)
-        key = f"f:{link}"
-        now = time.time()
-
-        async with _formats_lock:
-            cached = _formats_cache.get(key)
-            if cached and now - cached[0] < YOUTUBE_META_TTL:
-                return cached[1], cached[2]
-
-        opts = {"quiet": True}
+        
+        # Disabled caching options
+        opts = {
+            "quiet": True,
+            "no_cache_dir": True,  # Prevent disk writes
+        }
         if cf := _cookiefile_path():
             opts["cookiefile"] = cf
 
@@ -491,21 +468,13 @@ class YouTubeAPI:
         except Exception:
             pass
 
-        async with _formats_lock:
-            if len(_formats_cache) > YOUTUBE_META_MAX:
-                _formats_cache.clear()
-            _formats_cache[key] = (now, out, link)
-
         return out, link
 
     @capture_internal_err
     async def slider(
         self, link: str, query_type: int, videoid: Union[str, bool, None] = None
     ) -> Tuple[str, Optional[str], str, str]:
-        # Slider relies on multiple results. The raw API above is single-result optimized.
-        # We try basic VideosSearch here. If 403, we might need a multi-result Raw or yt-dlp implementation.
-        # For now, we fall back to yt-dlp plain search if VideosSearch fails.
-        
+        # Slider relies on multiple results.
         try:
             data = await VideosSearch(self._prepare_link(link, videoid), limit=10).next()
             results = data.get("result", [])
