@@ -1,10 +1,12 @@
 import time
 import logging
 import asyncio
+import json
+import os
 
 from pyrogram import filters
 from pyrogram.enums import ChatMembersFilter
-from pyrogram.errors import FloodWait, RPCError
+from pyrogram.errors import FloodWait, RPCError, MessageNotModified
 from pyrogram.types import Message
 
 from AnnieXMedia import app
@@ -28,134 +30,280 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Broadcast")
 
-SEMAPHORE = asyncio.Semaphore(30)  # Increased concurrency
+SEMAPHORE = asyncio.Semaphore(30)
+BROADCAST_FILE = "broadcast_state.json"
+
+# ---------------------------------------------------------------------------------
+# State Management Functions (Save/Load Progress)
+# ---------------------------------------------------------------------------------
+
+def save_checkpoint(data):
+    """Saves the current broadcast state to a local JSON file."""
+    with open(BROADCAST_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+def load_checkpoint():
+    """Loads the broadcast state from JSON if it exists."""
+    if os.path.exists(BROADCAST_FILE):
+        try:
+            with open(BROADCAST_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint: {e}")
+            return None
+    return None
+
+def clear_checkpoint():
+    """Deletes the state file after completion."""
+    if os.path.exists(BROADCAST_FILE):
+        os.remove(BROADCAST_FILE)
+
+# ---------------------------------------------------------------------------------
+# Core Broadcast Logic
+# ---------------------------------------------------------------------------------
+
+async def run_broadcast(data, status_message=None):
+    """
+    Main broadcast loop.
+    data: dict containing 'targets', 'mode', 'content_chat', 'content_msg', 'stats', 'initiator'
+    status_message: Message object to update progress (optional)
+    """
+    targets = data["targets"]
+    mode = data["mode"]
+    content_chat_id = data["content_chat"]
+    content_msg_id = data["content_msg"]
+    stats = data["stats"]
+    initiator_id = data.get("initiator")
+    
+    # 1. Fetch the content message again
+    try:
+        content = await app.get_messages(content_chat_id, content_msg_id)
+        if not content:
+            raise ValueError("Message not found")
+    except Exception as e:
+        logger.error(f"Could not fetch content message: {e}")
+        error_text = f"❌ <b>Error:</b> Could not fetch original message for broadcast.\nReason: {e}"
+        if status_message:
+            await status_message.edit_text(error_text)
+        elif initiator_id:
+            try:
+                await app.send_message(initiator_id, error_text)
+            except:
+                pass
+        clear_checkpoint() # Cannot proceed without content
+        return
+
+    sent_users = stats.get("sent_users", 0)
+    sent_chats = stats.get("sent_chats", 0)
+    failed = stats.get("failed", 0)
+    
+    # Delivery Helper Function
+    async def deliver(chat_id, is_user, retries=3):
+        nonlocal sent_users, sent_chats, failed
+        async with SEMAPHORE:
+            try:
+                if mode == "forward":
+                    await content.forward(chat_id)
+                else:
+                    await content.copy(chat_id)
+                
+                if is_user:
+                    sent_users += 1
+                else:
+                    sent_chats += 1
+                return True
+
+            except FloodWait as e:
+                wait_time = min(e.value, 120)
+                await asyncio.sleep(wait_time)
+                if retries > 0:
+                    return await deliver(chat_id, is_user, retries - 1)
+                failed += 1
+            except Exception:
+                failed += 1
+            return False
+
+    # 2. Process in Batches
+    total_targets_initial = len(targets) # Remaining targets
+    processed_count = 0
+    last_update_time = time.time()
+
+    # Iterate through targets in chunks of 100
+    for i in range(0, len(targets), 100):
+        batch = targets[i:i + 100]
+        tasks = []
+        
+        for t in batch:
+            # Simple heuristic: positive ID usually user, negative usually chat
+            # If your DB returns ID only, this guess is standard. 
+            is_user = t > 0 
+            tasks.append(deliver(t, is_user))
+
+        await asyncio.gather(*tasks)
+        
+        processed_count += len(batch)
+
+        # -- SAVE CHECKPOINT --
+        # Update in-memory stats
+        data["stats"] = {
+            "sent_users": sent_users,
+            "sent_chats": sent_chats,
+            "failed": failed
+        }
+        # Save remaining targets only (slicing off the ones we just did)
+        # Note: We must be careful not to slice 'targets' variable directly inside loop if we use range on it
+        # Strategy: update the data['targets'] to be the remainder
+        remaining_targets = targets[processed_count:]
+        data["targets"] = remaining_targets
+        
+        save_checkpoint(data)
+        
+        # Update Status Message (Every 8-10 seconds to avoid FloodWait)
+        if status_message and (time.time() - last_update_time) > 8:
+            try:
+                await status_message.edit_text(
+                    f"📢 <b>Broadcast In Progress...</b>\n\n"
+                    f"➤ Mode: <code>{mode}</code>\n"
+                    f"✅ Sent: <code>{sent_users + sent_chats}</code>\n"
+                    f"❌ Failed: <code>{failed}</code>\n"
+                    f"⏳ Remaining: <code>{len(remaining_targets)}</code>"
+                )
+                last_update_time = time.time()
+            except (MessageNotModified, RPCError):
+                pass
+            except Exception:
+                status_message = None # Stop trying if message deleted
+
+        await asyncio.sleep(2.5) # Throttle
+
+    # 3. Finish
+    clear_checkpoint()
+    
+    final_text = (
+        f"✅ <b>Broadcast Completed</b>\n\n"
+        f"➤ Mode: <code>{mode}</code>\n"
+        f"👤 Users Sent: <code>{sent_users}</code>\n"
+        f"👥 Chats Sent: <code>{sent_chats}</code>\n"
+        f"📦 Total Delivered: <code>{sent_users + sent_chats}</code>\n"
+        f"❌ Failed: <code>{failed}</code>"
+    )
+    
+    if status_message:
+        try:
+            await status_message.edit_text(final_text)
+        except:
+            pass
+    elif initiator_id:
+        try:
+            await app.send_message(initiator_id, final_text)
+        except:
+            pass
+            
+    logger.info(f"Broadcast finished. Success: {sent_users + sent_chats}, Failed: {failed}")
+
+
+# ---------------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------------
 
 @app.on_message(filters.command("broadcast") & SUDOERS)
 async def broadcast_command(client, message: Message):
-    try:
-        logger.info(f"/broadcast triggered by user: {message.from_user.id}")
-
-        command = message.text.lower()
-        mode = "forward" if "-forward" in command else "copy"
-
-        # Determine targets
-        if "-all" in command:
-            users = await get_served_users()
-            chats = await get_served_chats()
-            target_users = [u["user_id"] for u in users]
-            target_chats = [c["chat_id"] for c in chats]
-        elif "-users" in command:
-            users = await get_served_users()
-            target_users = [u["user_id"] for u in users]
-            target_chats = []
-        elif "-chats" in command:
-            chats = await get_served_chats()
-            target_users = []
-            target_chats = [c["chat_id"] for c in chats]
-        else:
-            logger.warning("Incorrect broadcast format used.")
-            return await message.reply_text(
-                "❗ Usage:\n"
-                "/broadcast -all/-users/-chats [-forward]\n"
-                "📝 Example: /broadcast -all Hello!"
-            )
-
-        if not target_users and not target_chats:
-            logger.info("No target recipients found.")
-            return await message.reply_text("⚠ No recipients found.")
-
-        # Extract content
-        if message.reply_to_message:
-            content = message.reply_to_message
-        else:
-            text = message.text
-            for kw in ["/broadcast", "-forward", "-all", "-users", "-chats"]:
-                text = text.replace(kw, "")
-            text = text.strip()
-
-            if not text:
-                return await message.reply_text("📝 Reply to a message or add content after the command.")
-            content = text
-
-        # Summary
-        total = len(target_users + target_chats)
-        sent_users = 0
-        sent_chats = 0
-        failed = 0
-
-        logger.info(f"Broadcast mode: {mode}")
-        logger.info(f"Targets - Users: {len(target_users)}, Chats: {len(target_chats)}, Total: {total}")
-
-        await message.reply_text(
-            f"📢 <b>Broadcast Started</b>\n\n"
-            f"➤ Mode: <code>{mode}</code>\n"
-            f"👤 Users: <code>{len(target_users)}</code>\n"
-            f"👥 Chats: <code>{len(target_chats)}</code>\n"
-            f"📦 Total: <code>{total}</code>\n"
-            f"⏳ Please wait while messages are being sent..."
+    # Check for unfinished broadcast
+    existing_state = load_checkpoint()
+    command = message.text.lower()
+    
+    if existing_state and "-new" not in command:
+        return await message.reply_text(
+            "⚠ <b>Unfinished Broadcast Found!</b>\n\n"
+            "Bot found a broadcast that stopped unexpectedly.\n"
+            "➤ <code>/resume_broadcast</code> to continue.\n"
+            "➤ <code>/broadcast -new ...</code> to start fresh."
         )
 
-        # Define delivery function
-        async def deliver(chat_id, is_user, retries=3):
-            nonlocal sent_users, sent_chats, failed
-            async with SEMAPHORE:
-                try:
-                    if isinstance(content, str):
-                        await app.send_message(chat_id, content)
-                    elif mode == "forward":
-                        await app.forward_messages(chat_id, message.chat.id, [content.id])
-                    else:
-                        try:
-                            await content.copy(chat_id)
-                        except Exception as e:
-                            logger.warning(f"Copy failed to {chat_id}: {e}")
-                            failed += 1
-                            return
+    # Parse Arguments
+    mode = "forward" if "-forward" in command else "copy"
+    target_ids = []
 
-                    if is_user:
-                        sent_users += 1
-                    else:
-                        sent_chats += 1
-
-                except FloodWait as e:
-                    wait_time = min(e.value, 120)
-                    logger.warning(f"FloodWait {e.value}s in chat {chat_id}, waiting {wait_time}s")
-                    await asyncio.sleep(wait_time)
-                    if retries > 0:
-                        return await deliver(chat_id, is_user, retries - 1)
-                    failed += 1
-
-                except RPCError as e:
-                    logger.warning(f"RPCError in chat {chat_id}: {e}")
-                    failed += 1
-
-                except Exception as e:
-                    logger.error(f"Error delivering to {chat_id}: {e}")
-                    failed += 1
-
-        # Combine all targets
-        targets = [(uid, True) for uid in target_users] + [(cid, False) for cid in target_chats]
-
-        for i in range(0, len(targets), 100):
-            batch = targets[i:i + 100]
-            await asyncio.gather(*[deliver(chat_id, is_user) for chat_id, is_user in batch])
-            await asyncio.sleep(2.5)  # Throttle between batches
-
-        # Final summary
-        await message.reply_text(
-            f"✅ <b>Broadcast Completed</b>\n\n"
-            f"➤ Mode: <code>{mode}</code>\n"
-            f"👤 Users Sent: <code>{sent_users}</code>\n"
-            f"👥 Chats Sent: <code>{sent_chats}</code>\n"
-            f"📦 Total Delivered: <code>{sent_users + sent_chats}</code>\n"
-            f"❌ Failed: <code>{failed}</code>"
+    if "-all" in command:
+        users = await get_served_users()
+        chats = await get_served_chats()
+        target_ids = [u["user_id"] for u in users] + [c["chat_id"] for c in chats]
+    elif "-users" in command:
+        users = await get_served_users()
+        target_ids = [u["user_id"] for u in users]
+    elif "-chats" in command:
+        chats = await get_served_chats()
+        target_ids = [c["chat_id"] for c in chats]
+    else:
+        return await message.reply_text(
+            "❗ Usage:\n"
+            "/broadcast -all/-users/-chats [-forward]\n"
+            "To ignore old broadcast: /broadcast -new -all ..."
         )
-        logger.info(f"Broadcast finished. Success: {sent_users + sent_chats}, Failed: {failed}")
 
-    except Exception as e:
-        logger.exception("Unhandled error in broadcast_command")
-        await message.reply_text(f"🚫 Broadcast failed: {str(e)}")
+    if not target_ids:
+        return await message.reply_text("⚠ No recipients found.")
 
+    # Get Content
+    if message.reply_to_message:
+        content_msg = message.reply_to_message
+        content_chat_id = content_msg.chat.id
+        content_msg_id = content_msg.id
+    else:
+        return await message.reply_text("📝 Reply to a message to broadcast.")
+
+    # Initial Save
+    state_data = {
+        "targets": target_ids,
+        "mode": mode,
+        "content_chat": content_chat_id,
+        "content_msg": content_msg_id,
+        "stats": {"sent_users": 0, "sent_chats": 0, "failed": 0},
+        "initiator": message.from_user.id
+    }
+    
+    save_checkpoint(state_data)
+
+    status_msg = await message.reply_text(f"📢 <b>Broadcast Started</b>\nTargets: {len(target_ids)}")
+    await run_broadcast(state_data, status_msg)
+
+
+@app.on_message(filters.command("resume_broadcast") & SUDOERS)
+async def manual_resume(client, message: Message):
+    state = load_checkpoint()
+    if not state:
+        return await message.reply_text("✅ No pending broadcast found.")
+    
+    msg = await message.reply_text(
+        f"♻ <b>Resuming Broadcast...</b>\n"
+        f"Remaining Targets: {len(state['targets'])}"
+    )
+    await run_broadcast(state, msg)
+
+
+# ---------------------------------------------------------------------------------
+# Auto-Resume & Auto-Clean Tasks
+# ---------------------------------------------------------------------------------
+
+async def auto_resume_check():
+    """Checks for pending broadcast on startup."""
+    await asyncio.sleep(20) # Wait for bot to connect fully
+    state = load_checkpoint()
+    if state:
+        logger.info("Found unfinished broadcast. Resuming automatically...")
+        initiator = state.get("initiator")
+        status_msg = None
+        
+        if initiator:
+            try:
+                status_msg = await app.send_message(
+                    initiator, 
+                    "⚠ <b>Bot Restarted.</b> Resuming incomplete broadcast..."
+                )
+            except:
+                pass
+        
+        await run_broadcast(state, status_msg)
 
 # Adminlist Auto-cleaner
 async def auto_clean():
@@ -177,3 +325,7 @@ async def auto_clean():
 
         except Exception as e:
             logger.warning(f"AutoClean error: {e}")
+
+# Start background tasks
+asyncio.create_task(auto_resume_check())
+# asyncio.create_task(auto_clean()) # Uncomment if you want this running
