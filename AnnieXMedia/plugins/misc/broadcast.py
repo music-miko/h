@@ -7,7 +7,13 @@ import datetime
 
 from pyrogram import filters
 from pyrogram.enums import ChatMembersFilter
-from pyrogram.errors import FloodWait, RPCError, MessageNotModified
+from pyrogram.errors import (
+    FloodWait, 
+    RPCError, 
+    InputUserDeactivated, 
+    UserIsBlocked, 
+    PeerIdInvalid
+)
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 from AnnieXMedia import app
@@ -29,44 +35,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Broadcast")
 
-SEMAPHORE = asyncio.Semaphore(25) # Slightly reduced for stability
+# Reduced concurrency prevents server-side flood errors
+SEMAPHORE = asyncio.Semaphore(20) 
 BROADCAST_FILE = "broadcast_state.json"
-BROADCAST_LOCK = asyncio.Lock() # Prevents multiple concurrent runs
-CANCEL_BROADCAST = False # Flag to stop execution
+FAILED_FILE = "broadcast_failed.json"
+BROADCAST_LOCK = asyncio.Lock()
+CANCEL_BROADCAST = False 
+
+# Cache for permanent failures (Blocked/Deleted users)
+FAILED_IDS = set()
 
 # ---------------------------------------------------------------------------------
-# Utils: Time Formatting
+# Utils
 # ---------------------------------------------------------------------------------
-
-def format_time(seconds):
-    return str(datetime.timedelta(seconds=int(seconds)))
 
 def get_readable_time(seconds: int) -> str:
     count = 0
-    ping_time = ""
     time_list = []
     time_suffix_list = ["s", "m", "h", "days"]
-
     while count < 4:
         count += 1
         remainder, result = divmod(seconds, 60) if count < 3 else divmod(seconds, 24)
-        if seconds == 0 and remainder == 0:
-            break
+        if seconds == 0 and remainder == 0: break
         time_list.append(int(result))
         seconds = int(remainder)
-
     for x in range(len(time_list)):
         time_list[x] = str(time_list[x]) + time_suffix_list[x]
-    if len(time_list) == 4:
-        ping_time += time_list.pop() + ", "
-
+    if len(time_list) == 4: time_list.pop()
     time_list.reverse()
-    ping_time += ":".join(time_list)
-    return ping_time
-
-# ---------------------------------------------------------------------------------
-# State Management
-# ---------------------------------------------------------------------------------
+    return ":".join(time_list)
 
 def save_checkpoint(data):
     with open(BROADCAST_FILE, "w") as f:
@@ -77,14 +74,31 @@ def load_checkpoint():
         try:
             with open(BROADCAST_FILE, "r") as f:
                 return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load checkpoint: {e}")
-            return None
+        except: return None
     return None
 
 def clear_checkpoint():
     if os.path.exists(BROADCAST_FILE):
         os.remove(BROADCAST_FILE)
+
+# --- FAILED LIST MANAGEMENT ---
+
+def load_failed_list():
+    """Load blocked/deleted users into memory to skip them later."""
+    global FAILED_IDS
+    if os.path.exists(FAILED_FILE):
+        try:
+            with open(FAILED_FILE, "r") as f:
+                FAILED_IDS = set(json.load(f))
+        except: pass
+
+def save_failed_list():
+    """Save new blocked/deleted users to file."""
+    with open(FAILED_FILE, "w") as f:
+        json.dump(list(FAILED_IDS), f)
+
+# Load immediately on startup
+load_failed_list()
 
 # ---------------------------------------------------------------------------------
 # Core Broadcast Logic
@@ -93,9 +107,8 @@ def clear_checkpoint():
 async def run_broadcast(data, status_message=None):
     global CANCEL_BROADCAST
     
-    # Acquire lock to ensure only one runs at a time
+    # Ensure exclusive access
     if BROADCAST_LOCK.locked():
-        logger.warning("Broadcast triggered but lock is active.")
         return
 
     async with BROADCAST_LOCK:
@@ -107,80 +120,100 @@ async def run_broadcast(data, status_message=None):
         content_msg_id = data["content_msg"]
         stats = data["stats"]
         initiator_id = data.get("initiator")
-        start_time = data.get("start_time", time.time()) # Use saved time if resuming
+        start_time = data.get("start_time", time.time())
         
-        # Validate content
+        # Validate Content
         try:
             content = await app.get_messages(content_chat_id, content_msg_id)
-            if not content:
-                raise ValueError("Message not found")
-        except Exception as e:
-            err = f"❌ <b>Error:</b> Content message not found. Broadcast cancelled.\nReason: {e}"
+            if not content: raise ValueError
+        except:
+            err = "❌ <b>Error:</b> Content message not found (maybe deleted?)."
             if status_message: await status_message.edit_text(err)
-            elif initiator_id: await app.send_message(initiator_id, err)
             clear_checkpoint()
             return
 
         sent_users = stats.get("sent_users", 0)
         sent_chats = stats.get("sent_chats", 0)
         failed = stats.get("failed", 0)
-        total_targets_initial = len(targets)
-        processed_count = 0
+        skipped = stats.get("skipped", 0)
         
-        # For Speed Calculation
-        loop_start_time = time.time()
-        
-        async def deliver(chat_id, is_user, retries=3):
-            nonlocal sent_users, sent_chats, failed
+        async def deliver(chat_id, is_user, retries=0):
+            nonlocal sent_users, sent_chats, failed, skipped
+            
+            # 1. OPTIMIZATION: Skip known dead IDs immediately
+            if chat_id in FAILED_IDS:
+                return False
+
             async with SEMAPHORE:
                 try:
+                    # 2. FIX: Strict 10s timeout. If it takes longer, kill it.
                     if mode == "forward":
-                        await content.forward(chat_id)
+                        await asyncio.wait_for(content.forward(chat_id), timeout=10)
                     else:
-                        await content.copy(chat_id)
+                        await asyncio.wait_for(content.copy(chat_id), timeout=10)
                     
                     if is_user: sent_users += 1
                     else: sent_chats += 1
                     return True
+
                 except FloodWait as e:
-                    await asyncio.sleep(min(e.value, 60))
-                    if retries > 0:
-                        return await deliver(chat_id, is_user, retries - 1)
+                    # Only wait if short, otherwise fail to keep queue moving
+                    if e.value < 45:
+                        await asyncio.sleep(e.value)
+                        if retries > 0:
+                            return await deliver(chat_id, is_user, retries - 1)
                     failed += 1
+
+                # 3. FIX: Catch Permanent Errors -> Add to Blacklist
+                except (InputUserDeactivated, UserIsBlocked, PeerIdInvalid):
+                    FAILED_IDS.add(chat_id) 
+                    failed += 1
+                
+                # 4. FIX: Catch Timeout -> Treat as failed
+                except asyncio.TimeoutError:
+                    failed += 1
+                    
                 except Exception:
                     failed += 1
+                
                 return False
 
-        # --- Batch Loop ---
+        # --- Batch Loop (100 at a time) ---
         for i in range(0, len(targets), 100):
-            # Check Cancellation
             if CANCEL_BROADCAST:
-                if status_message: await status_message.edit_text("🛑 <b>Broadcast Cancelled by Admin.</b>")
+                if status_message: await status_message.edit_text("🛑 <b>Cancelled.</b>")
                 clear_checkpoint()
                 return
 
             batch = targets[i:i + 100]
             tasks = [deliver(t, t > 0) for t in batch]
+            
             await asyncio.gather(*tasks)
             
-            processed_count += len(batch)
-
-            # Update State
-            data["stats"] = {"sent_users": sent_users, "sent_chats": sent_chats, "failed": failed}
-            data["targets"] = targets[processed_count:]
+            # Checkpoint Save
+            data["stats"] = {
+                "sent_users": sent_users, 
+                "sent_chats": sent_chats, 
+                "failed": failed,
+                "skipped": skipped
+            }
+            # Remove processed from queue
+            data["targets"] = targets[i + 100:] 
+            
             save_checkpoint(data)
+            save_failed_list() # Update blacklist file
 
-            # Update Status & Calculate Time
+            # UI Update
             if status_message:
                 elapsed = time.time() - start_time
-                # Speed = processed / elapsed
-                # Note: This average speed includes previous sessions if resuming, 
-                # but calculating current session speed is often more accurate for ETC.
-                # Here we use total elapsed for simplicity.
-                speed = (sent_users + sent_chats + failed) / elapsed if elapsed > 0 else 1
+                if elapsed == 0: elapsed = 1
+                
+                total_processed = sent_users + sent_chats + failed
+                speed = total_processed / elapsed
                 remaining = len(data["targets"])
-                etc_seconds = remaining / speed if speed > 0 else 0
-                etc_str = get_readable_time(etc_seconds)
+                
+                if speed == 0: speed = 0.1
+                etc_str = get_readable_time(remaining / speed)
                 
                 try:
                     await status_message.edit_text(
@@ -188,19 +221,16 @@ async def run_broadcast(data, status_message=None):
                         f"➤ <b>Mode:</b> `{mode}`\n"
                         f"✅ <b>Success:</b> `{sent_users + sent_chats}`\n"
                         f"❌ <b>Failed:</b> `{failed}`\n"
+                        f"🗑 <b>Skipped:</b> `{skipped}`\n"
                         f"⏳ <b>Remaining:</b> `{remaining}`\n\n"
                         f"🚀 <b>Speed:</b> `{round(speed, 1)} msg/s`\n"
                         f"⏱ <b>ETC:</b> `{etc_str}`"
                     )
-                except (MessageNotModified, RPCError):
-                    pass
-                except Exception:
-                    status_message = None
-
-            await asyncio.sleep(2) # Breath
+                except: pass
 
         # --- Finish ---
         clear_checkpoint()
+        save_failed_list()
         total_time = get_readable_time(time.time() - start_time)
         
         final_text = (
@@ -208,20 +238,17 @@ async def run_broadcast(data, status_message=None):
             f"➤ <b>Mode:</b> `{mode}`\n"
             f"👤 <b>Users:</b> `{sent_users}`\n"
             f"👥 <b>Chats:</b> `{sent_chats}`\n"
-            f"❌ <b>Failed:</b> `{failed}`\n\n"
+            f"❌ <b>Failed:</b> `{failed}`\n"
+            f"🗑 <b>Skipped (Dead):</b> `{skipped}`\n\n"
             f"⏱ <b>Total Time:</b> `{total_time}`"
         )
         
         if status_message:
-            try:
-                await status_message.edit_text(final_text)
-            except:
-                pass
+            try: await status_message.edit_text(final_text)
+            except: pass
         elif initiator_id:
-            try:
-                await app.send_message(initiator_id, final_text)
-            except:
-                pass
+            try: await app.send_message(initiator_id, final_text)
+            except: pass
 
 # ---------------------------------------------------------------------------------
 # Commands
@@ -229,144 +256,142 @@ async def run_broadcast(data, status_message=None):
 
 @app.on_message(filters.command("broadcast") & SUDOERS)
 async def broadcast_command(client, message: Message):
-    # Lock Check
     if BROADCAST_LOCK.locked():
-        return await message.reply_text("⚠ <b>A broadcast is already running!</b>\nWait for it to finish or use /cancelbroadcast.")
+        return await message.reply_text("⚠ <b>Broadcast Running!</b> Use /cancelbroadcast to stop it.")
     
     existing_state = load_checkpoint()
-    if existing_state:
-        return await message.reply_text(
-            "⚠ <b>Unfinished Broadcast Found!</b>\n\n"
-            "Use /cancelbroadcast to delete it or check your saved messages to resume."
-        )
+    if existing_state and "-new" not in message.text.lower():
+        return await message.reply_text("⚠ <b>Unfinished Broadcast Found!</b>\nUse `/resume_broadcast` or `/broadcast -new`.")
 
     command = message.text.lower()
     mode = "forward" if "-forward" in command else "copy"
-    target_ids = []
-
-    # Target selection
+    
+    # Target Loading
     if "-all" in command:
         users = await get_served_users()
         chats = await get_served_chats()
-        target_ids = [u["user_id"] for u in users] + [c["chat_id"] for c in chats]
+        raw_targets = [u["user_id"] for u in users] + [c["chat_id"] for c in chats]
     elif "-users" in command:
         users = await get_served_users()
-        target_ids = [u["user_id"] for u in users]
+        raw_targets = [u["user_id"] for u in users]
     elif "-chats" in command:
         chats = await get_served_chats()
-        target_ids = [c["chat_id"] for c in chats]
+        raw_targets = [c["chat_id"] for c in chats]
     else:
         return await message.reply_text("❗ Usage: /broadcast -all/-users/-chats [-forward]")
 
-    if not target_ids:
+    if not raw_targets:
         return await message.reply_text("⚠ No recipients found.")
+
+    # PRE-FILTERING: Calculate skipped users BEFORE starting
+    valid_targets = []
+    skipped_count = 0
+    for t in raw_targets:
+        if t in FAILED_IDS:
+            skipped_count += 1
+        else:
+            valid_targets.append(t)
+
+    if not valid_targets:
+        return await message.reply_text(f"✅ All {skipped_count} targets are known dead/blocked. Nothing to send.")
 
     if message.reply_to_message:
         content_msg = message.reply_to_message
     else:
-        return await message.reply_text("📝 Reply to a message to broadcast.")
+        return await message.reply_text("📝 Reply to a message.")
 
-    # Save State
+    # Initialize State
     state_data = {
-        "targets": target_ids,
+        "targets": valid_targets,
         "mode": mode,
         "content_chat": content_msg.chat.id,
         "content_msg": content_msg.id,
-        "stats": {"sent_users": 0, "sent_chats": 0, "failed": 0},
+        "stats": {"sent_users": 0, "sent_chats": 0, "failed": 0, "skipped": skipped_count},
         "initiator": message.from_user.id,
         "start_time": time.time()
     }
     save_checkpoint(state_data)
 
-    status_msg = await message.reply_text(f"📢 <b>Broadcast Started</b>\nTargets: {len(target_ids)}")
+    status_msg = await message.reply_text(f"📢 <b>Broadcast Started</b>\nTargets: {len(valid_targets)}\nSkipped (Dead): {skipped_count}")
     await run_broadcast(state_data, status_msg)
 
 @app.on_message(filters.command("cancelbroadcast") & SUDOERS)
 async def cancel_broadcast_cmd(client, message: Message):
     global CANCEL_BROADCAST
-    
     if os.path.exists(BROADCAST_FILE):
         CANCEL_BROADCAST = True
         clear_checkpoint()
-        await message.reply_text("🛑 <b>Broadcast Cancelled.</b>\nState file deleted and process stopping.")
+        await message.reply_text("🛑 <b>Broadcast Cancelled.</b>")
     else:
-        await message.reply_text("✅ No active broadcast found to cancel.")
+        await message.reply_text("✅ No active broadcast.")
+
+@app.on_message(filters.command("resume_broadcast") & SUDOERS)
+async def manual_resume(client, message: Message):
+    state = load_checkpoint()
+    if not state: return await message.reply_text("✅ No pending broadcast.")
+    msg = await message.reply_text("♻ <b>Resuming Broadcast...</b>")
+    await run_broadcast(state, msg)
+
+@app.on_message(filters.command("clearfailed") & SUDOERS)
+async def clear_failed_cache(client, message: Message):
+    global FAILED_IDS
+    FAILED_IDS.clear()
+    if os.path.exists(FAILED_FILE):
+        os.remove(FAILED_FILE)
+    await message.reply_text("✅ Failed cache cleared.")
 
 # ---------------------------------------------------------------------------------
-# Auto-Resume Logic & Callback Handling
+# Auto-Recovery
 # ---------------------------------------------------------------------------------
 
 @app.on_callback_query(filters.regex(r"^(resume_broadcast|cancel_broadcast)$") & SUDOERS)
 async def broadcast_callback(client, query: CallbackQuery):
-    data = query.data
-    
-    if data == "cancel_broadcast":
+    if query.data == "cancel_broadcast":
         clear_checkpoint()
-        await query.message.edit_text("🛑 Broadcast cancelled and queue deleted.")
-    
-    elif data == "resume_broadcast":
+        await query.message.edit_text("🛑 Cancelled.")
+    elif query.data == "resume_broadcast":
         state = load_checkpoint()
-        if not state:
-            return await query.answer("Broadcast finished or file invalid.", show_alert=True)
-        
+        if not state: return await query.answer("Expired.", show_alert=True)
         await query.answer("Resuming...")
-        await query.message.edit_text("♻ <b>Resuming Broadcast...</b>")
-        
-        # Start running
+        await query.message.edit_text("♻ <b>Resuming...</b>")
         await run_broadcast(state, query.message)
 
 async def auto_resume_check():
-    """Run on startup to check for crashes."""
+    """Checks for crashes on restart."""
     await asyncio.sleep(10) # Wait for connection
-    
     state = load_checkpoint()
     if state:
-        logger.info("Found incomplete broadcast. Sending alert to owner...")
-        
-        # Calculate quick stats for the message
-        total_done = state["stats"]["sent_users"] + state["stats"]["sent_chats"]
-        remaining = len(state["targets"])
-        
+        logger.info("Found incomplete broadcast.")
         text = (
-            "⚠ <b>Broadcast Interrupted!</b>\n"
-            "The bot restarted while a broadcast was running.\n\n"
-            f"✅ <b>Completed:</b> {total_done}\n"
-            f"⏳ <b>Remaining:</b> {remaining}\n\n"
-            "What would you like to do?"
+            "⚠ <b>Broadcast Interrupted!</b>\n\n"
+            f"✅ Done: {state['stats']['sent_users'] + state['stats']['sent_chats']}\n"
+            f"⏳ Left: {len(state['targets'])}\n\n"
+            "Select action:"
         )
+        buttons = InlineKeyboardMarkup([[
+            InlineKeyboardButton("▶ Resume", callback_data="resume_broadcast"),
+            InlineKeyboardButton("🛑 Cancel", callback_data="cancel_broadcast")
+        ]])
         
-        buttons = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("▶ Resume", callback_data="resume_broadcast"),
-                InlineKeyboardButton("🛑 Cancel", callback_data="cancel_broadcast")
-            ]
-        ])
-        
-        # Hardcoded ID as requested
-        TARGET_ID = 89891145
-        
-        try:
-            await app.send_message(TARGET_ID, text, reply_markup=buttons)
-        except Exception as e:
-            logger.error(f"Failed to send auto-resume message to {TARGET_ID}: {e}")
+        # Notify the owner (Hardcoded ID)
+        try: await app.send_message(89891145, text, reply_markup=buttons)
+        except: pass
 
-# Adminlist Auto-cleaner (Keep existing)
+# Adminlist Auto-cleaner (Legacy)
 async def auto_clean():
     while True:
         await asyncio.sleep(10)
         try:
             chats = await get_active_chats()
             for chat_id in chats:
-                if chat_id not in adminlist:
-                    adminlist[chat_id] = []
+                if chat_id not in adminlist: adminlist[chat_id] = []
                 async for member in app.get_chat_members(chat_id, filter=ChatMembersFilter.ADMINISTRATORS):
                     if getattr(member, "privileges", None) and member.privileges.can_manage_video_chats:
                         adminlist[chat_id].append(member.user.id)
                 for username in await get_authuser_names(chat_id):
                     user_id = await alpha_to_int(username)
                     adminlist[chat_id].append(user_id)
-        except Exception as e:
-            logger.warning(f"AutoClean error: {e}")
+        except: pass
 
-# Start Background Tasks
 asyncio.create_task(auto_resume_check())
+# asyncio.create_task(auto_clean())
