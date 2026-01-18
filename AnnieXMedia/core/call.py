@@ -15,6 +15,7 @@ from pytgcalls.types import AudioQuality, ChatUpdate, MediaStream, StreamEnded, 
 
 import config
 from strings import get_string
+from strings.manual import MANUAL_SUGGESTIONS
 from AnnieXMedia import LOGGER, YouTube, app
 from AnnieXMedia.misc import db
 from AnnieXMedia.utils.database import (
@@ -39,30 +40,6 @@ from AnnieXMedia.utils.errors import capture_internal_err
 autoend = {}
 counter = {}
 
-# --- MANUAL SUGGESTION LIST (Mix of English & Hindi) ---
-MANUAL_SUGGESTIONS = [
-    {"title": "Shape of You - Ed Sheeran", "vidid": "JGwWNGJdvx8"},
-    {"title": "Tum Hi Ho - Aashiqui 2", "vidid": "IJq0yyWug1k"},
-    {"title": "See You Again - Wiz Khalifa", "vidid": "RgKAFK5djSk"},
-    {"title": "Kesariya - Brahmastra", "vidid": "BddP6PYo2gs"},
-    {"title": "Despacito - Luis Fonsi", "vidid": "kJQP7kiw5Fk"},
-    {"title": "Raataan Lambiyan - Shershaah", "vidid": "gvyUuxdRdR4"},
-    {"title": "Faded - Alan Walker", "vidid": "60ItHLz5WEA"},
-    {"title": "Apna Bana Le - Bhediya", "vidid": "ElZfdU54Cp8"},
-    {"title": "Believer - Imagine Dragons", "vidid": "7wtfhZwyrcc"},
-    {"title": "Jai Ho - Slumdog Millionaire", "vidid": "xwwAVRyNmgQ"},
-    {"title": "Perfect - Ed Sheeran", "vidid": "2Vv-BfVoq4g"},
-    {"title": "Kun Faya Kun - Rockstar", "vidid": "T94PHkuydcw"},
-    {"title": "Let Me Love You - DJ Snake", "vidid": "euCqAq6BRa4"},
-    {"title": "Kabira - Yeh Jawaani Hai Deewani", "vidid": "jHNNMj5bNQw"},
-    {"title": "Closer - The Chainsmokers", "vidid": "PT2_F-1esPk"},
-    {"title": "Agar Tum Saath Ho - Tamasha", "vidid": "xRb8hxwN5zc"},
-    {"title": "Senorita - Shawn Mendes", "vidid": "Pkh8UtuejGw"},
-    {"title": "Gerua - Dilwale", "vidid": "AEIVhBS6baE"},
-    {"title": "Chaleya - Jawan", "vidid": "VAdGW7QDJiU"},
-    {"title": "Vaaste - Dhvani Bhanushali", "vidid": "BBAyRBTfsOU"},
-]
-# -----------------------------------------------------------
 
 def dynamic_media_stream(path: str, video: bool = False, ffmpeg_params: str = None) -> MediaStream:
     if video:
