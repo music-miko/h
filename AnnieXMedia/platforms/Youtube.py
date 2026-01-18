@@ -5,7 +5,7 @@ import json
 import os
 import re
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 import yt_dlp
 from pyrogram.enums import MessageEntityType
@@ -20,10 +20,9 @@ from AnnieXMedia.utils.tuning import YTDLP_TIMEOUT, YOUTUBE_META_MAX, YOUTUBE_ME
 
 
 # === Caches ===
-_cache: Dict[str, Tuple[float, List[Dict]]] = {}
+# In-memory cache removed. Storing in JSON file as requested.
+CACHE_FILE = "youtube_cache.json"
 _cache_lock = asyncio.Lock()
-_formats_cache: Dict[str, Tuple[float, List[Dict], str]] = {}
-_formats_lock = asyncio.Lock()
 
 
 # === Constants ===
@@ -71,19 +70,58 @@ async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
         return b"", b"timeout"
 
 
+# === JSON Cache Helpers ===
+async def _get_from_cache(key: str) -> Optional[Any]:
+    """Retrieves data from the JSON cache file if valid and not expired."""
+    async with _cache_lock:
+        if not os.path.exists(CACHE_FILE):
+            return None
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            if key in data:
+                timestamp, value = data[key]
+                if time.time() - timestamp < YOUTUBE_META_TTL:
+                    return value
+        except Exception:
+            pass
+    return None
+
+
+async def _save_to_cache(key: str, value: Any):
+    """Saves data to the JSON cache file, managing size limits."""
+    async with _cache_lock:
+        try:
+            if os.path.exists(CACHE_FILE):
+                with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            else:
+                data = {}
+        except Exception:
+            data = {}
+
+        # Reset cache if it exceeds the maximum size
+        if len(data) > YOUTUBE_META_MAX:
+            data.clear()
+
+        data[key] = (time.time(), value)
+
+        try:
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
+
+
 @capture_internal_err
 async def cached_youtube_search(query: str) -> List[Dict]:
     key = f"q:{query}"
-    now = time.time()
-
-    async with _cache_lock:
-        if key in _cache:
-            ts, val = _cache[key]
-            if now - ts < YOUTUBE_META_TTL:
-                return val
-            _cache.pop(key, None)
-        if len(_cache) > YOUTUBE_META_MAX:
-            _cache.clear()
+    
+    # Check JSON cache
+    cached_result = await _get_from_cache(key)
+    if cached_result is not None:
+        return cached_result
 
     try:
         data = await VideosSearch(query, limit=1).next()
@@ -92,8 +130,8 @@ async def cached_youtube_search(query: str) -> List[Dict]:
         result = []
 
     if result:
-        async with _cache_lock:
-            _cache[key] = (now, result)
+        # Save to JSON cache
+        await _save_to_cache(key, result)
 
     return result
 
@@ -317,12 +355,12 @@ class YouTubeAPI:
     ) -> Tuple[List[Dict], str]:
         link = self._prepare_link(link, videoid)
         key = f"f:{link}"
-        now = time.time()
 
-        async with _formats_lock:
-            cached = _formats_cache.get(key)
-            if cached and now - cached[0] < YOUTUBE_META_TTL:
-                return cached[1], cached[2]
+        # Check JSON cache
+        cached_result = await _get_from_cache(key)
+        if cached_result:
+            # Stored as (out_list, link_str)
+            return cached_result[0], cached_result[1]
 
         opts = {"quiet": True}
         if cf := _cookiefile_path():
@@ -355,10 +393,9 @@ class YouTubeAPI:
         except Exception:
             pass
 
-        async with _formats_lock:
-            if len(_formats_cache) > YOUTUBE_META_MAX:
-                _formats_cache.clear()
-            _formats_cache[key] = (now, out, link)
+        # Save to JSON cache
+        # We store both the format list and the link to match original return signature
+        await _save_to_cache(key, (out, link))
 
         return out, link
 
