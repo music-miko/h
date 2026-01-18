@@ -336,8 +336,7 @@ class Call:
                     if results:
                         # 3. Build Professional Message (Clean, NO LIST)
                         # Updated to sound more like a premium service
-                        text_list = "<b>🎵 Playback Completed | Recommended Tracks</b>\n\n"
-                        text_list += "\n👇 <b>Select a suggested track below or use /play to continue.</b>"
+                        text_list = "👇 <b>Select a suggested track below or use /play to continue.</b>"
 
                         # 4. Generate Buttons
                         # Randomly select 3 unique songs for buttons
@@ -346,7 +345,7 @@ class Call:
                         for track in random_choices:
                             buttons.append([
                                 InlineKeyboardButton(
-                                    text=f"▶️ {track['title'][:25]}...", 
+                                    text=f"{track['title'][:25]}...", 
                                     callback_data=f"suggestion|{track['vidid']}"
                                 )
                             ])
