@@ -888,7 +888,7 @@ async def suggestion_handler(client, CallbackQuery, _):
     try:
         # Data format: suggestion|vidid
         callback_data = CallbackQuery.data.strip()
-        vidid = callback_data.split(None, 1)[1].split("|")[1]
+        vidid = callback_data.split("|")[1]
     except Exception:
         return await CallbackQuery.answer("Error parsing button", show_alert=True)
 
