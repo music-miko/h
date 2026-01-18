@@ -30,20 +30,18 @@ except Exception:
     TG_APP = None
 
 # -----------------------
-# Media DB config (required for Media DB fetch)
+# Media DB config
 # -----------------------
 try:
-    from config import MEDIA_CHANNEL_ID  # should be int like -100123...
+    from config import MEDIA_CHANNEL_ID
 except Exception:
     MEDIA_CHANNEL_ID = None
 
-# user said: will provide media fetching DB string in config -> use DB_URI
 try:
     from config import DB_URI
 except Exception:
     DB_URI = None
 
-# Optional overrides if your db/collection names differ
 try:
     from config import MEDIA_DB_NAME
 except Exception:
@@ -109,6 +107,11 @@ CDN_RETRY_DELAY = 2
 
 # Whole flow timeout: MediaDB attempt + V2 attempt
 CYCLE_TIMEOUT_SEC = 120
+
+# --- CONCURRENCY CONTROL (FIX FOR STUCK BOT) ---
+# Limit concurrent downloads to prevent CPU/IO freezing
+MAX_CONCURRENT_DOWNLOADS = 5 
+DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 
 # -----------------------
@@ -177,7 +180,8 @@ async def get_http_session() -> aiohttp.ClientSession:
         if _session and not _session.closed:
             return _session
         timeout = aiohttp.ClientTimeout(total=600, sock_connect=20, sock_read=60)
-        connector = TCPConnector(limit=0, ttl_dns_cache=300, enable_cleanup_closed=True)
+        # FIX: Changed limit from 0 (unlimited) to 100 to prevent socket exhaustion
+        connector = TCPConnector(limit=100, ttl_dns_cache=300, enable_cleanup_closed=True)
         _session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         return _session
 
@@ -321,40 +325,22 @@ async def _download_from_cdn(cdn_url: str, out_path: str) -> Optional[str]:
 
 
 # -----------------------
-# MEDIA DB FETCH (FIXED + VERBOSE PRINTS)
+# MEDIA DB FETCH
 # -----------------------
 async def _download_from_media_db(track_id: str, is_video: bool) -> Optional[str]:
-    """
-    Uses:
-      - MongoDB via DB_URI (collection medias)
-      - Telegram channel MEDIA_CHANNEL_ID
-    Downloads file to DOWNLOAD_DIR
-    """
     if not track_id:
-        print("[MEDIA_DB] ❌ track_id empty")
         return None
 
-    if TG_APP is None:
-        print("[MEDIA_DB] ❌ TG_APP not available (pyrogram app import failed)")
-        return None
-
-    if not DB_URI:
-        print("[MEDIA_DB] ❌ DB_URI missing in config")
-        return None
-
-    if not MEDIA_CHANNEL_ID:
-        print("[MEDIA_DB] ❌ MEDIA_CHANNEL_ID missing in config")
+    if TG_APP is None or not DB_URI or not MEDIA_CHANNEL_ID:
         return None
 
     try:
         ch_id = int(MEDIA_CHANNEL_ID)
     except Exception:
-        print(f"[MEDIA_DB] ❌ MEDIA_CHANNEL_ID not int: {MEDIA_CHANNEL_ID!r}")
         return None
 
     ext = "mp4" if is_video else "mp3"
 
-    # try several keys (your DB might store with ext)
     keys_to_try = [
         f"{track_id}.{ext}",
         track_id,
@@ -374,61 +360,48 @@ async def _download_from_media_db(track_id: str, is_video: bool) -> Optional[str
 
         if not msg_id:
             _inc("media_db_miss")
-            print(f"[MEDIA_DB] ❌ MISS type={'video' if is_video else 'audio'} track_id={track_id}")
             return None
 
         _inc("media_db_hit")
-        print(f"[MEDIA_DB] ✅ HIT type={'video' if is_video else 'audio'} track_id={track_id} key={used_key} msg_id={msg_id}")
-
         out_dir = str(Path(DOWNLOAD_DIR))
         _ensure_dir(out_dir)
 
         final_path = os.path.join(out_dir, f"{track_id}.{ext}")
         tmp_path = final_path + ".temp"
 
-        # already present
         if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-            print(f"[MEDIA_DB] ✅ ALREADY_ON_DISK -> {final_path}")
             return final_path
 
-        # fetch message
         msg = await TG_APP.get_messages(ch_id, msg_id)
         if not msg:
             _inc("media_db_fail")
-            print(f"[MEDIA_DB] ❌ FAIL: message not found in channel {ch_id} for msg_id={msg_id}")
             return None
 
-        # download using app.download_media (more reliable)
+        # This part downloads from Telegram servers, which can be heavy
         dl_res = await TG_APP.download_media(msg, file_name=tmp_path)
         fixed = _resolve_if_dir(dl_res) if isinstance(dl_res, str) else None
 
         if not fixed or not os.path.exists(fixed) or os.path.getsize(fixed) <= 0:
             _inc("media_db_fail")
-            print(f"[MEDIA_DB] ❌ FAIL: download_media returned bad file: {fixed}")
             with contextlib.suppress(Exception):
                 if tmp_path and os.path.exists(tmp_path):
                     os.remove(tmp_path)
             return None
 
-        # normalize to final filename
         try:
             if fixed != final_path:
                 os.replace(fixed, final_path)
         except Exception:
-            # if rename fails, still use fixed
             final_path = fixed
 
         if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-            print(f"[MEDIA_DB] ✅ DOWNLOADED -> {final_path}")
             return final_path
 
         _inc("media_db_fail")
-        print(f"[MEDIA_DB] ❌ FAIL: file empty after download: {final_path}")
         return None
 
     except Exception as e:
         _inc("media_db_fail")
-        print(f"[MEDIA_DB] ❌ EXCEPTION: {type(e).__name__}: {e}")
         return None
 
 
@@ -578,14 +551,18 @@ async def deduplicate_download(key: str, runner):
         _inflight[key] = fut
     try:
         result = await runner()
-        fut.set_result(result)
+        if not fut.done():
+            fut.set_result(result)
         return result
     except Exception as e:
-        fut.set_exception(e)
+        if not fut.done():
+            fut.set_exception(e)
         return None
     finally:
         async with _inflight_lock:
-            _inflight.pop(key, None)
+            # Only remove if it's the SAME future
+            if _inflight.get(key) == fut:
+                _inflight.pop(key, None)
 
 
 # -----------------------
@@ -594,69 +571,63 @@ async def deduplicate_download(key: str, runner):
 async def media_download(link: str, type: str, title: str = "") -> Optional[str]:
     """
     FLOW:
-      1) Try Media DB first (Mongo via DB_URI + TG Media Channel)
-      2) If not found -> try V2
-      3) Whole cycle timeout = 120s
-      4) If timeout -> return None
+      1) Limit concurrency (Semaphore)
+      2) Try Media DB first
+      3) If not found -> try V2
+      4) Whole cycle timeout = 120s
     """
     _inc("total")
 
-    vid = extract_video_id(link)
-    dedup_id = vid or link.strip()
-    key = f"{type}:{dedup_id}"
+    # --- FIX: Apply Concurrency Limit ---
+    async with DOWNLOAD_SEMAPHORE:
+        vid = extract_video_id(link)
+        dedup_id = vid or link.strip()
+        key = f"{type}:{dedup_id}"
 
-    async def _cycle():
-        is_video = (type == "video")
-        is_audio = (type == "audio")
+        async def _cycle():
+            is_video = (type == "video")
+            is_audio = (type == "audio")
 
-        # 1) Media DB first
-        if vid:
-            db_path = await _download_from_media_db(vid, is_video=is_video)
-            if db_path and os.path.exists(db_path):
+            # 1) Media DB first
+            if vid:
+                db_path = await _download_from_media_db(vid, is_video=is_video)
+                if db_path and os.path.exists(db_path):
+                    _inc("success")
+                    if is_audio:
+                        _inc("success_audio")
+                    else:
+                        _inc("success_video")
+                    LOGGER.info(f"MEDIA_DB_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{db_path}'")
+                    return db_path
+
+            # 2) V2 fallback
+            v2_path = await v2_download(link, media_type=("video" if is_video else "audio"))
+            if v2_path and os.path.exists(v2_path):
                 _inc("success")
                 if is_audio:
                     _inc("success_audio")
                 else:
                     _inc("success_video")
-                LOGGER.info(f"MEDIA_DB_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{db_path}'")
-                print(f"[DOWNLOADER] ✅ MEDIA_DB SUCCESS {type} -> {db_path}")
-                return db_path
+                LOGGER.info(f"V2_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{v2_path}'")
+                return v2_path
 
-        # 2) V2 fallback
-        v2_path = await v2_download(link, media_type=("video" if is_video else "audio"))
-        if v2_path and os.path.exists(v2_path):
-            _inc("success")
-            if is_audio:
-                _inc("success_audio")
-            else:
-                _inc("success_video")
-            LOGGER.info(f"V2_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{v2_path}'")
-            print(f"[DOWNLOADER] ✅ V2 SUCCESS {type} -> {v2_path}")
-            return v2_path
-
-        _inc("failed")
-        if is_audio:
-            _inc("failed_audio")
-        else:
-            _inc("failed_video")
-        LOGGER.warning(f"DOWNLOAD_FAILED type={type} title='{title or 'Unknown'}' link='{link}' reason='not_found'")
-        print(f"[DOWNLOADER] ❌ FAILED {type} -> {link}")
-        return None
-
-    async def run():
-        try:
-            return await asyncio.wait_for(_cycle(), timeout=CYCLE_TIMEOUT_SEC)
-        except asyncio.TimeoutError:
-            _inc("timeout_fail")
             _inc("failed")
-            if type == "audio":
+            if is_audio:
                 _inc("failed_audio")
-            elif type == "video":
+            else:
                 _inc("failed_video")
-            LOGGER.warning(
-                f"DOWNLOAD_TIMEOUT type={type} title='{title or 'Unknown'}' link='{link}' timeout={CYCLE_TIMEOUT_SEC}s"
-            )
-            print(f"[DOWNLOADER] ⏳ TIMEOUT {type} ({CYCLE_TIMEOUT_SEC}s) -> {link}")
+            LOGGER.warning(f"DOWNLOAD_FAILED type={type} title='{title or 'Unknown'}' link='{link}' reason='not_found'")
             return None
 
-    return await deduplicate_download(key, run)
+        async def run():
+            try:
+                return await asyncio.wait_for(_cycle(), timeout=CYCLE_TIMEOUT_SEC)
+            except asyncio.TimeoutError:
+                _inc("timeout_fail")
+                _inc("failed")
+                LOGGER.warning(
+                    f"DOWNLOAD_TIMEOUT type={type} title='{title or 'Unknown'}' link='{link}' timeout={CYCLE_TIMEOUT_SEC}s"
+                )
+                return None
+
+        return await deduplicate_download(key, run)
