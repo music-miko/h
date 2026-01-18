@@ -332,9 +332,8 @@ class Call:
                     if results:
                         # 3. Build Professional Message
                         text_list = (
-                            "🎵 **Playback Finished**\n\n"
-                            "The queue is currently empty.\n"
-                            "👇 **Tap a button below to play a recommended track!**"
+                            "💤 Zzz… no tracks left, wake me up with a new one!\n"
+                            "👇 Tap a button below to play a recommended track!"
                         )
 
                         # 4. Generate Buttons
