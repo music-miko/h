@@ -1,7 +1,10 @@
-﻿# Authored By Certified Coders © 2025
+# Authored By Certified Coders © 2025
 import asyncio
 import random
 import string
+import time
+import json
+import os
 
 from pyrogram import filters
 from pyrogram.errors import FloodWait, RandomIdDuplicate
@@ -27,6 +30,99 @@ from AnnieXMedia.utils.inline import (
 )
 from AnnieXMedia.utils.logger import play_logs
 from AnnieXMedia.utils.stream.stream import stream
+
+
+# --- JSON ANTI-SPAM LOGIC START ---
+
+SPAM_FILE = "spam_stats.json"
+SPAM_DATA = {}
+
+def load_spam_data():
+    """Loads warnings and blocks from JSON file on startup."""
+    global SPAM_DATA
+    if os.path.exists(SPAM_FILE):
+        try:
+            with open(SPAM_FILE, "r") as f:
+                data = json.load(f)
+                # We only really care about persisting warnings and blocks. 
+                # History is transient and can be reset.
+                SPAM_DATA = data
+        except Exception as e:
+            print(f"Error loading spam data: {e}")
+            SPAM_DATA = {}
+    else:
+        SPAM_DATA = {}
+
+def save_spam_data():
+    """Saves the current SPAM_DATA to JSON file."""
+    try:
+        with open(SPAM_FILE, "w") as f:
+            # We save everything including history to keep state consistent
+            json.dump(SPAM_DATA, f, indent=4)
+    except Exception as e:
+        print(f"Error saving spam data: {e}")
+
+# Load data immediately when this file is imported
+load_spam_data()
+
+async def check_spam_status(user_id: int, query: str):
+    """
+    Checks spam status. 
+    - Reads from RAM (fast).
+    - Writes to JSON only on Warn or Block (persistent).
+    """
+    current_time = time.time()
+    user_id_str = str(user_id) # JSON keys must be strings
+
+    # Initialize user if not present
+    if user_id_str not in SPAM_DATA:
+        SPAM_DATA[user_id_str] = {"history": [], "warnings": 0, "blocked_until": 0}
+
+    user_data = SPAM_DATA[user_id_str]
+
+    # 1. CHECK IF USER IS BLOCKED
+    if user_data["blocked_until"] > current_time:
+        remaining_seconds = user_data["blocked_until"] - current_time
+        remaining_hours = int(remaining_seconds / 3600)
+        remaining_mins = int((remaining_seconds % 3600) / 60)
+        return True, f"🚫 **Blocked!**\nYou are banned from using the bot for {remaining_hours}h {remaining_mins}m due to spamming."
+
+    # 2. CLEAN UP OLD HISTORY (Keep only requests from last 10 seconds)
+    # The history list in JSON might look like [[query, time], [query, time]]
+    user_data["history"] = [
+        (q, t) for q, t in user_data["history"] 
+        if current_time - t < 10
+    ]
+
+    # 3. ADD CURRENT REQUEST
+    user_data["history"].append((query, current_time))
+
+    # 4. COUNT DUPLICATES
+    same_query_count = len([q for q, t in user_data["history"] if q == query])
+
+    # 5. TRIGGER SPAM DETECTION
+    if same_query_count >= 4:
+        user_data["warnings"] += 1
+        user_data["history"] = []  # Reset history to prevent immediate re-trigger
+        
+        should_save = True # We need to save the new warning count/block status
+
+        if user_data["warnings"] >= 3:
+            # BLOCK FOR 24 HOURS
+            user_data["blocked_until"] = current_time + 86400
+            user_data["warnings"] = 0  # Reset warnings
+            save_spam_data() # SAVE TO JSON
+            return True, "❌ **You have been blocked for 24 hours for repeated spamming.**"
+        else:
+            # SEND WARNING
+            save_spam_data() # SAVE TO JSON
+            return True, f"⚠️ **Stop Spamming!**\nYou are playing the same song too fast.\n\n**Warnings: {user_data['warnings']}/3**\n(Next violation will result in a 24h block)."
+    
+    # We don't save to JSON on normal requests to prevent disk lag, 
+    # only on warnings/blocks.
+    
+    return False, None
+# --- JSON ANTI-SPAM LOGIC END ---
 
 
 @app.on_message(
@@ -58,6 +154,15 @@ async def play_command(
     url,
     fplay,
 ):
+    # --- SPAM CHECK INTEGRATION ---
+    user_id = message.from_user.id
+    query_text = message.text or ""
+    
+    is_spam, spam_msg = await check_spam_status(user_id, query_text)
+    if is_spam:
+        return await message.reply_text(spam_msg)
+    # -----------------------------
+
     try:
         mystic = await message.reply_text(
             _["play_2"].format(channel) if channel else random.choice(AYU)
