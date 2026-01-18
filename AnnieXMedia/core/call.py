@@ -1,9 +1,11 @@
 # Authored By Certified Coders © 2025
+# Refactored for Professional UX & Stability
+
 import asyncio
 import os
 import random
 from datetime import datetime, timedelta
-from typing import Union
+from typing import Union, List, Dict
 
 from ntgcalls import TelegramServerError, ConnectionNotFound
 from pyrogram import Client
@@ -42,6 +44,9 @@ counter = {}
 
 
 def dynamic_media_stream(path: str, video: bool = False, ffmpeg_params: str = None) -> MediaStream:
+    """
+    Generates a MediaStream object with optimal quality settings based on the input type.
+    """
     if video:
         return MediaStream(
             media_path=path,
@@ -60,7 +65,11 @@ def dynamic_media_stream(path: str, video: bool = False, ffmpeg_params: str = No
             ffmpeg_parameters=ffmpeg_params,
         )
 
+
 async def _clear_(chat_id: int) -> None:
+    """
+    Cleans up database records and cache for a specific chat ID.
+    """
     popped = db.pop(chat_id, None)
     if popped:
         await auto_clean(popped)
@@ -68,6 +77,7 @@ async def _clear_(chat_id: int) -> None:
     await remove_active_video_chat(chat_id)
     await remove_active_chat(chat_id)
     await set_loop(chat_id, 0)
+
 
 class Call:
     def __init__(self):
@@ -97,7 +107,6 @@ class Call:
         self.five = PyTgCalls(self.userbot5) if self.userbot5 else None
 
         self.active_calls: set[int] = set()
-
 
     @capture_internal_err
     async def pause_stream(self, chat_id: int) -> None:
@@ -132,7 +141,6 @@ class Call:
         finally:
             self.active_calls.discard(chat_id)
 
-
     @capture_internal_err
     async def force_stop_stream(self, chat_id: int) -> None:
         assistant = await group_assistant(self, chat_id)
@@ -153,7 +161,6 @@ class Call:
             pass
         finally:
             self.active_calls.discard(chat_id)
-
 
     @capture_internal_err
     async def skip_stream(self, chat_id: int, link: str, video: Union[bool, str] = None, image: Union[bool, str] = None) -> None:
@@ -178,7 +185,7 @@ class Call:
     @capture_internal_err
     async def speedup_stream(self, chat_id: int, file_path: str, speed: float, playing: list) -> None:
         if not isinstance(playing, list) or not playing or not isinstance(playing[0], dict):
-            raise AssistantErr("Invalid stream info for speedup.")
+            raise AssistantErr("⚠️ Invalid stream configuration for speed adjustment.")
 
         assistant = await group_assistant(self, chat_id)
         base = os.path.basename(file_path)
@@ -215,8 +222,7 @@ class Call:
                 "old_second": db[chat_id][0].get("seconds"),
             })
         else:
-            raise AssistantErr("Stream mismatch during speedup.")
-
+            raise AssistantErr("⚠️ Stream mismatch encountered during speed adjustment.")
 
     @capture_internal_err
     async def stream_call(self, link: str) -> None:
@@ -247,32 +253,46 @@ class Call:
         try:
             await assistant.play(chat_id, stream)
         
-        # --- FIXED & PROFESSIONAL TEXT (BOT PERMISSIONS) ---
+        # --- IMPROVED PROFESSIONAL ERROR HANDLING ---
         except ChatAdminRequired:
             raise AssistantErr(
-                "<b>❌ Missing Privileges</b>\n\n"
-                "The **Bot** requires additional permissions to invite the assistant to this chat.\n"
-                "Please promote the **Bot** as an **Admin** with the following right:\n"
-                "» <b>Invite Users via Link</b>"
+                "🚫 **Permission Denied**\n\n"
+                "I cannot invite the Assistant Account to this chat because I lack the necessary privileges.\n\n"
+                "**Solution:**\n"
+                "Please promote the **Bot** to **Admin** with the following permission:\n"
+                "✅ **Invite Users via Link**"
             )
 
         except NoActiveGroupCall:
-            raise AssistantErr(_["call_8"])
+            raise AssistantErr(
+                "⚠️ **No Active Video Chat**\n\n"
+                "Please start a Video Chat (Voice Call) in this group first.\n"
+                "To start: Tap the group header → 'Start Video Chat'."
+            )
 
         except NoAudioSourceFound:
-            raise AssistantErr(_["call_11"])
+            raise AssistantErr(
+                "🔇 **Audio Source Error**\n\n"
+                "The system could not detect a valid audio source from the provided link."
+            )
 
         except NoVideoSourceFound:
-            raise AssistantErr(_["call_12"])
+            raise AssistantErr(
+                "📹 **Video Source Error**\n\n"
+                "The system could not detect a valid video source."
+            )
 
         except (ConnectionNotFound, TelegramServerError):
-            raise AssistantErr(_["call_10"])
+            raise AssistantErr(
+                "📡 **Connection Failed**\n\n"
+                "Unable to connect to Telegram servers. This may be a temporary issue."
+            )
 
         except Exception as e:
             raise AssistantErr(
-                f"<b>❌ Connection Failed</b>\n\n"
-                f"The system encountered an unexpected issue while joining.\n"
-                f"<b>Technical Details:</b> {e}"
+                f"❌ **Unexpected Error**\n\n"
+                f"An unknown error occurred while joining the call.\n"
+                f"Try Again."
             )
 
         self.active_calls.add(chat_id)
@@ -286,7 +306,6 @@ class Call:
             users = len(await assistant.get_participants(chat_id))
             if users == 1:
                 autoend[chat_id] = datetime.now() + timedelta(minutes=1)
-
 
     @capture_internal_err
     async def play(self, client, chat_id: int) -> None:
@@ -305,15 +324,18 @@ class Call:
             if not check:
                 try:
                     # 1. Log Queue End
-                    LOGGER(__name__).info(f"Queue ended for Chat ID: {chat_id}. Preparing suggestions...")
+                    LOGGER(__name__).info(f"Playback queue depleted for Chat ID: {chat_id}. Generating suggestions...")
 
                     # 2. Use manual list
                     results = MANUAL_SUGGESTIONS
                     
                     if results:
-                        # 3. Build Professional Message (Clean, NO LIST)
-                        # Updated to sound more like a premium service
-                        text_list = "👇 <b>Select a suggested track below or use /play to continue.</b>"
+                        # 3. Build Professional Message
+                        text_list = (
+                            "🎵 **Playback Finished**\n\n"
+                            "The queue is currently empty.\n"
+                            "👇 **Tap a button below to play a recommended track!**"
+                        )
 
                         # 4. Generate Buttons
                         # Randomly select 3 unique songs for buttons
@@ -322,7 +344,7 @@ class Call:
                         for track in random_choices:
                             buttons.append([
                                 InlineKeyboardButton(
-                                    text=f"{track['title'][:25]}...", 
+                                    text=f"▶️ {track['title'][:25]}...", 
                                     callback_data=f"suggestion|{track['vidid']}"
                                 )
                             ])
@@ -528,9 +550,8 @@ class Call:
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "stream"
 
-
     async def start(self) -> None:
-        LOGGER(__name__).info("Starting PyTgCalls Clients...")
+        LOGGER(__name__).info("🚀 Starting PyTgCalls Clients...")
         if config.STRING1:
             await self.one.start()
         if config.STRING2:
