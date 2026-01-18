@@ -269,18 +269,35 @@ class Call:
 
         try:
             await assistant.play(chat_id, stream)
-        except (NoActiveGroupCall, ChatAdminRequired):
+        
+        # --- FIXED & PROFESSIONAL TEXT (BOT PERMISSIONS) ---
+        except ChatAdminRequired:
+            raise AssistantErr(
+                "<b>❌ Missing Privileges</b>\n\n"
+                "The **Bot** requires additional permissions to invite the assistant to this chat.\n"
+                "Please promote the **Bot** as an **Admin** with the following right:\n"
+                "» <b>Invite Users via Link</b>"
+            )
+
+        except NoActiveGroupCall:
             raise AssistantErr(_["call_8"])
+
         except NoAudioSourceFound:
             raise AssistantErr(_["call_11"])
+
         except NoVideoSourceFound:
             raise AssistantErr(_["call_12"])
+
         except (ConnectionNotFound, TelegramServerError):
             raise AssistantErr(_["call_10"])
+
         except Exception as e:
             raise AssistantErr(
-                f"ᴜɴᴀʙʟᴇ ᴛᴏ ᴊᴏɪɴ ᴛʜᴇ ɢʀᴏᴜᴘ ᴄᴀʟʟ.\nRᴇᴀsᴏɴ: {e}"
+                f"<b>❌ Connection Failed</b>\n\n"
+                f"The system encountered an unexpected issue while joining.\n"
+                f"<b>Technical Details:</b> {e}"
             )
+
         self.active_calls.add(chat_id)
         await add_active_chat(chat_id)
         await music_on(chat_id)
@@ -318,8 +335,9 @@ class Call:
                     
                     if results:
                         # 3. Build Professional Message (Clean, NO LIST)
-                        text_list = "<b>🎵 QUEUE FINISHED | SUGGESTED TRACKS 🎵</b>\n\n"
-                        text_list += "\n👇 <b>Select a random track below or use /play to search!</b>"
+                        # Updated to sound more like a premium service
+                        text_list = "<b>🎵 Playback Completed | Recommended Tracks</b>\n\n"
+                        text_list += "\n👇 <b>Select a suggested track below or use /play to continue.</b>"
 
                         # 4. Generate Buttons
                         # Randomly select 3 unique songs for buttons
@@ -328,7 +346,7 @@ class Call:
                         for track in random_choices:
                             buttons.append([
                                 InlineKeyboardButton(
-                                    text=f"▶️ {track['title'][:25]}...", # Professional cutoff
+                                    text=f"▶️ {track['title'][:25]}...", 
                                     callback_data=f"suggestion|{track['vidid']}"
                                 )
                             ])
