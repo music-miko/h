@@ -930,6 +930,8 @@ async def suggestion_handler(client, CallbackQuery, _):
             streamtype="youtube",
             forceplay=False,
         )
+        await mystic.delete()
+    
     except ValueError:
         await mystic.edit_text("😕 **Unable to play this song.**\nIt may be region-restricted or unavailable. Please try another.")
     except Exception as e:
