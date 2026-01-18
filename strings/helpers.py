@@ -1,4 +1,4 @@
-﻿# Authored By Certified Coders © 2025
+# Authored By Certified Coders © 2025
 # ───────────────────────────────────────────────────────────────────────
 
 # ── inside helpers.py ────────────────────────────────────────────────
@@ -76,16 +76,30 @@ HELP_3 = """
 HELP_4 = """
 <b><u>⚠️ SUDO COMMANDS</u></b>
 
+<b>📢 Broadcast Tools</b>
+• /broadcast -all | -users | -chats – Start a broadcast  
+• /broadcast -new – Force start a fresh broadcast  
+• /resume_broadcast – Resume an interrupted broadcast  
+• /cancelbroadcast – Stop the current broadcast  
+• /clearfailed – Clear the 'blocked users' cache  
+
 <b>Chat Control</b>
-• /blacklistchat <chat_id>  
-• /whitelistchat <chat_id>  
-• /blacklistedchats  
+• /blacklistchat <chat_id> – Block bot in a chat  
+• /whitelistchat <chat_id> – Unblock bot in a chat  
+• /blacklistedchats – List blocked chats  
 
 <b>User Blocking</b>
-• /block <user>  
-• /unblock <user>  
-• /blockedusers  
+• /block <user_id> – Block a user from using bot  
+• /unblock <user_id> – Unblock a user  
+• /blockedusers – List blocked users  
 
-<b>Broadcast</b>
-• /broadcast <message>  
+<b>Global Ban (GBAN)</b>
+• /gban <user_id> – Ban user from all served chats  
+• /ungban <user_id> – Remove global ban  
+• /gbannedusers – List gbanned users  
+
+<b>System</b>
+• /sudolist – List sudo users  
+• /addsudo <user_id> – Add a sudo user  
+• /delsudo <user_id> – Remove a sudo user 
 """
