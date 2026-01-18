@@ -322,19 +322,44 @@ class YouTubeAPI:
         self, link: str, videoid: Union[str, bool, None] = None
     ) -> Tuple[str, Optional[str], int, str, str]:
         prepared_link = self._prepare_link(link, videoid)
-
         info = await self._fetch_video_info(prepared_link)
+
+        # === Fallback: Manual ID extraction if API fails ===
+        if not info:
+            # If standard fetch fails, but we have a valid-looking link, force defaults
+            if "watch?v=" in prepared_link:
+                try:
+                    vid_id = prepared_link.split("v=")[-1].split("&")[0]
+                    if len(vid_id) == 11:  # Simple validation for standard YT IDs
+                        info = {
+                            "id": vid_id,
+                            "title": "Unknown",
+                            "duration": "00:00",
+                            "thumbnail": "",
+                            "link": prepared_link
+                        }
+                except Exception:
+                    pass
+
         if not info:
             raise ValueError(f"Video not found for: {prepared_link}")
 
-        dt = info.get("duration")
-        ds = int(time_to_seconds(dt)) if dt else 0
-        thumb = (
-            info.get("thumbnail")
-            or info.get("thumbnails", [{}])[-1].get("url", "")
-        ).split("?")[0]
+        # === Safe Data Extraction with Defaults ===
+        title = info.get("title") or "Unknown"
+        dt = info.get("duration") or "00:00"
+        
+        # Calculate seconds safely
+        try:
+            ds = int(time_to_seconds(dt)) if dt else 0
+        except Exception:
+            ds = 0
 
-        return info.get("title", ""), dt, ds, thumb, info.get("id", "")
+        # Safe thumbnail extraction
+        thumbs = info.get("thumbnails", [{}])
+        thumb_url = info.get("thumbnail") or (thumbs[-1].get("url") if thumbs else "") or ""
+        thumb = thumb_url.split("?")[0]
+
+        return title, dt, ds, thumb, info.get("id", "")
 
     @capture_internal_err
     async def title(self, link: str, videoid: Union[str, bool, None] = None) -> str:
@@ -357,23 +382,37 @@ class YouTubeAPI:
     @capture_internal_err
     async def track(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[Dict, str]:
         prepared_link = self._prepare_link(link, videoid)
-
-        # _fetch_video_info now handles Raw API -> yt-dlp fallback internally
         info = await self._fetch_video_info(prepared_link)
         
+        # === Fallback: Manual ID extraction if API fails ===
+        if not info:
+            if "watch?v=" in prepared_link:
+                try:
+                    vid_id = prepared_link.split("v=")[-1].split("&")[0]
+                    if len(vid_id) == 11:
+                        info = {
+                            "id": vid_id,
+                            "title": "Unknown",
+                            "duration": "00:00",
+                            "thumbnail": "",
+                            "link": prepared_link
+                        }
+                except Exception:
+                    pass
+
         if not info:
             raise ValueError(f"Could not fetch info for '{prepared_link}' via any method.")
 
-        thumb = (
-            info.get("thumbnail")
-            or info.get("thumbnails", [{}])[-1].get("url", "")
-        ).split("?")[0]
+        # === Safe Data Extraction with Defaults ===
+        thumbs = info.get("thumbnails", [{}])
+        thumb_url = info.get("thumbnail") or (thumbs[-1].get("url") if thumbs else "") or ""
+        thumb = thumb_url.split("?")[0]
 
         details = {
-            "title": info.get("title", ""),
-            "link": info.get("link", prepared_link),
+            "title": info.get("title") or "Unknown",
+            "link": info.get("link") or prepared_link,
             "vidid": info.get("id", ""),
-            "duration_min": info.get("duration"),
+            "duration_min": info.get("duration") or "00:00",
             "thumb": thumb,
         }
         return details, info.get("id", "")
