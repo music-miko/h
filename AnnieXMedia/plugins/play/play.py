@@ -44,8 +44,6 @@ def load_spam_data():
         try:
             with open(SPAM_FILE, "r") as f:
                 data = json.load(f)
-                # We only really care about persisting warnings and blocks. 
-                # History is transient and can be reset.
                 SPAM_DATA = data
         except Exception as e:
             print(f"Error loading spam data: {e}")
@@ -57,7 +55,6 @@ def save_spam_data():
     """Saves the current SPAM_DATA to JSON file."""
     try:
         with open(SPAM_FILE, "w") as f:
-            # We save everything including history to keep state consistent
             json.dump(SPAM_DATA, f, indent=4)
     except Exception as e:
         print(f"Error saving spam data: {e}")
@@ -67,9 +64,7 @@ load_spam_data()
 
 async def check_spam_status(user_id: int, query: str):
     """
-    Checks spam status. 
-    - Reads from RAM (fast).
-    - Writes to JSON only on Warn or Block (persistent).
+    Checks spam status with professional messages and support link.
     """
     current_time = time.time()
     user_id_str = str(user_id) # JSON keys must be strings
@@ -85,10 +80,16 @@ async def check_spam_status(user_id: int, query: str):
         remaining_seconds = user_data["blocked_until"] - current_time
         remaining_hours = int(remaining_seconds / 3600)
         remaining_mins = int((remaining_seconds % 3600) / 60)
-        return True, f"🚫 **Blocked!**\nYou are banned from using the bot for {remaining_hours}h {remaining_mins}m due to spamming."
+        
+        msg = (
+            f"🚫 **Access Restricted**\n\n"
+            f"You have been temporarily banned from using the bot for **{remaining_hours}h {remaining_mins}m** due to repeated spamming.\n\n"
+            f"👮‍♂️ **Reason:** Excessive request flooding.\n"
+            f"ℹ️ **For more details contact:** [Support Chat](https://t.me/ArcChatz)"
+        )
+        return True, msg
 
     # 2. CLEAN UP OLD HISTORY (Keep only requests from last 10 seconds)
-    # The history list in JSON might look like [[query, time], [query, time]]
     user_data["history"] = [
         (q, t) for q, t in user_data["history"] 
         if current_time - t < 10
@@ -105,21 +106,30 @@ async def check_spam_status(user_id: int, query: str):
         user_data["warnings"] += 1
         user_data["history"] = []  # Reset history to prevent immediate re-trigger
         
-        should_save = True # We need to save the new warning count/block status
-
         if user_data["warnings"] >= 3:
             # BLOCK FOR 24 HOURS
             user_data["blocked_until"] = current_time + 86400
             user_data["warnings"] = 0  # Reset warnings
             save_spam_data() # SAVE TO JSON
-            return True, "❌ **You have been blocked for 24 hours for repeated spamming.**"
+            
+            msg = (
+                f"🛑 **Account Blocked**\n\n"
+                f"You have been banned for **24 hours** for violating our spam policy.\n\n"
+                f"ℹ️ **For more details contact:** [Support Chat](https://t.me/ArcChatz)"
+            )
+            return True, msg
         else:
             # SEND WARNING
             save_spam_data() # SAVE TO JSON
-            return True, f"⚠️ **Stop Spamming!**\nYou are playing the same song too fast.\n\n**Warnings: {user_data['warnings']}/3**\n(Next violation will result in a 24h block)."
-    
-    # We don't save to JSON on normal requests to prevent disk lag, 
-    # only on warnings/blocks.
+            
+            msg = (
+                f"⚠️ **Action Required: Slow Down**\n\n"
+                f"You are sending requests too quickly. Please wait a moment before trying again.\n\n"
+                f"🚨 **Warnings:** {user_data['warnings']}/3\n"
+                f"*(Next violation will result in a 24-hour ban)*\n\n"
+                f"ℹ️ **For more details contact:** [Support Chat](https://t.me/ArcChatz)"
+            )
+            return True, msg
     
     return False, None
 # --- JSON ANTI-SPAM LOGIC END ---
@@ -160,7 +170,7 @@ async def play_command(
     
     is_spam, spam_msg = await check_spam_status(user_id, query_text)
     if is_spam:
-        return await message.reply_text(spam_msg)
+        return await message.reply_text(spam_msg, disable_web_page_preview=True)
     # -----------------------------
 
     try:
@@ -869,3 +879,56 @@ async def slider_queries(client, CallbackQuery, _):
 
     except Exception:
         pass
+
+
+@app.on_callback_query(filters.regex("suggestion") & ~BANNED_USERS)
+@languageCB
+@capture_callback_err
+async def suggestion_handler(client, CallbackQuery, _):
+    try:
+        # Data format: suggestion|vidid
+        callback_data = CallbackQuery.data.strip()
+        vidid = callback_data.split(None, 1)[1].split("|")[1]
+    except Exception:
+        return await CallbackQuery.answer("Error parsing button", show_alert=True)
+
+    await CallbackQuery.answer("Processing Suggestion...")
+    
+    # Simulate a user play command for the suggested song
+    chat_id = CallbackQuery.message.chat.id
+    user_id = CallbackQuery.from_user.id
+    user_name = CallbackQuery.from_user.first_name
+    
+    try:
+        # Delete the suggestion message to clean up
+        await CallbackQuery.message.delete()
+    except:
+        pass
+
+    try:
+        mystic = await app.send_message(
+            chat_id,
+            _["play_2"].format("Suggest") # Using a placeholder channel name
+        )
+        
+        # Fetch details for the song
+        details, track_id = await YouTube.track(vidid, videoid=vidid)
+        
+        # Reuse the stream logic
+        await stream(
+            _,
+            mystic,
+            user_id,
+            details,
+            chat_id,
+            user_name,
+            chat_id,
+            video=False, # Default to audio for suggestions
+            streamtype="youtube",
+            forceplay=False,
+        )
+    except Exception as e:
+        if "mystic" in locals():
+            await mystic.edit_text(f"Failed to play suggestion: {e}")
+        else:
+            await app.send_message(chat_id, f"Failed to play suggestion: {e}")
