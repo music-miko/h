@@ -1,13 +1,14 @@
-﻿# Authored By Certified Coders © 2025
+# Authored By Certified Coders © 2025
 import asyncio
 import os
+import random
 from datetime import datetime, timedelta
 from typing import Union
 
 from ntgcalls import TelegramServerError, ConnectionNotFound
 from pyrogram import Client
 from pyrogram.errors import FloodWait, ChatAdminRequired
-from pyrogram.types import InlineKeyboardMarkup
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pytgcalls import PyTgCalls
 from pytgcalls.exceptions import NoActiveGroupCall, NoAudioSourceFound, NoVideoSourceFound
 from pytgcalls.types import AudioQuality, ChatUpdate, MediaStream, StreamEnded, Update, VideoQuality
@@ -37,6 +38,31 @@ from AnnieXMedia.utils.errors import capture_internal_err
 
 autoend = {}
 counter = {}
+
+# --- MANUAL SUGGESTION LIST (Mix of English & Hindi) ---
+MANUAL_SUGGESTIONS = [
+    {"title": "Shape of You - Ed Sheeran", "vidid": "JGwWNGJdvx8"},
+    {"title": "Tum Hi Ho - Aashiqui 2", "vidid": "IJq0yyWug1k"},
+    {"title": "See You Again - Wiz Khalifa", "vidid": "RgKAFK5djSk"},
+    {"title": "Kesariya - Brahmastra", "vidid": "BddP6PYo2gs"},
+    {"title": "Despacito - Luis Fonsi", "vidid": "kJQP7kiw5Fk"},
+    {"title": "Raataan Lambiyan - Shershaah", "vidid": "gvyUuxSY41Q"},
+    {"title": "Faded - Alan Walker", "vidid": "60ItHLz5WEA"},
+    {"title": "Apna Bana Le - Bhediya", "vidid": "u8wS1fC6b2M"},
+    {"title": "Believer - Imagine Dragons", "vidid": "7wtfhZwyrcc"},
+    {"title": "Jai Ho - Slumdog Millionaire", "vidid": "xwwAVRyNmgQ"},
+    {"title": "Perfect - Ed Sheeran", "vidid": "2Vv-BfVoq4g"},
+    {"title": "Kun Faya Kun - Rockstar", "vidid": "T94PHkuydcw"},
+    {"title": "Let Me Love You - DJ Snake", "vidid": "euCqAq6BRa4"},
+    {"title": "Kabira - Yeh Jawaani Hai Deewani", "vidid": "jHNNMj5bNQw"},
+    {"title": "Closer - The Chainsmokers", "vidid": "PT2_F-1esPk"},
+    {"title": "Agar Tum Saath Ho - Tamasha", "vidid": "xRb8hqwN5F8"},
+    {"title": "Senorita - Shawn Mendes", "vidid": "Pkh8UtuejGw"},
+    {"title": "Gerua - Dilwale", "vidid": "pRCQBNLSCtU"},
+    {"title": "Chaleya - Jawan", "vidid": "VAdGW7QDJiU"},
+    {"title": "Vaaste - Dhvani Bhanushali", "vidid": "Bznxx12Ptl0"},
+]
+# -----------------------------------------------------------
 
 def dynamic_media_stream(path: str, video: bool = False, ffmpeg_params: str = None) -> MediaStream:
     if video:
@@ -280,18 +306,58 @@ class Call:
                 loop = loop - 1
                 await set_loop(chat_id, loop)
             await auto_clean(popped)
+
+            # --- SUGGESTION SYSTEM START ---
             if not check:
-                    await _clear_(chat_id)
-                    if chat_id in self.active_calls:
-                        try:
-                            await client.leave_call(chat_id)
-                        except NoActiveGroupCall:
-                            pass
-                        except Exception:
-                            pass
-                        finally:
-                            self.active_calls.discard(chat_id)
-                    return
+                try:
+                    # 1. Log Queue End
+                    LOGGER(__name__).info(f"Queue ended for Chat ID: {chat_id}. Preparing suggestions...")
+
+                    # 2. Use manual list
+                    results = MANUAL_SUGGESTIONS
+                    
+                    if results:
+                        # 3. Build Professional Message (Clean, NO LIST)
+                        text_list = "<b>🎵 QUEUE FINISHED | SUGGESTED TRACKS 🎵</b>\n\n"
+                        text_list += "\n👇 <b>Select a random track below or use /play to search!</b>"
+
+                        # 4. Generate Buttons
+                        # Randomly select 3 unique songs for buttons
+                        random_choices = random.sample(results, 3)
+                        buttons = []
+                        for track in random_choices:
+                            buttons.append([
+                                InlineKeyboardButton(
+                                    text=f"▶️ {track['title'][:25]}...", # Professional cutoff
+                                    callback_data=f"suggestion|{track['vidid']}"
+                                )
+                            ])
+                        
+                        # 5. Send Message & Log
+                        await app.send_message(
+                            popped["chat_id"],
+                            text=text_list,
+                            reply_markup=InlineKeyboardMarkup(buttons)
+                        )
+                        LOGGER(__name__).info(f"Suggestions sent successfully to Chat ID: {popped['chat_id']}")
+
+                except Exception as e:
+                    LOGGER(__name__).error(f"Failed to send suggestions for {chat_id}: {e}")
+
+                # 6. Standard Cleanup
+                await _clear_(chat_id)
+                if chat_id in self.active_calls:
+                    try:
+                        await client.leave_call(chat_id)
+                    except NoActiveGroupCall:
+                        pass
+                    except Exception:
+                        pass
+                    finally:
+                        self.active_calls.discard(chat_id)
+                return
+            # --- SUGGESTION SYSTEM END ---
+
         except:
             try:
                 await _clear_(chat_id)
