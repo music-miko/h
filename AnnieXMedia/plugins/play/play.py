@@ -1,587 +1,939 @@
+
 # Authored By Certified Coders © 2025
 import asyncio
-import aiohttp
-import contextlib
+import random
+import string
+import time
 import json
 import os
-import re
-import time
-from typing import Dict, List, Optional, Tuple, Union, Any
 
-import yt_dlp
-from pyrogram.enums import MessageEntityType
-from pyrogram.types import Message
-from youtubesearchpython.aio import VideosSearch, Playlist
+from pyrogram import filters
+from pyrogram.errors import FloodWait, RandomIdDuplicate
+from pyrogram.types import InlineKeyboardMarkup, InputMediaPhoto, Message
+from pytgcalls.exceptions import NoActiveGroupCall
 
-from AnnieXMedia.utils.cookie_handler import COOKIE_PATH
-from AnnieXMedia.utils.downloader import media_download
-from AnnieXMedia.utils.errors import capture_internal_err
-from AnnieXMedia.utils.formatters import time_to_seconds
-from AnnieXMedia.utils.tuning import YTDLP_TIMEOUT
-
-# === Constants ===
-YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
-
-
-# === Helpers ===
-def _cookiefile_path() -> Optional[str]:
-    """
-    Return COOKIE_PATH only if it exists, non-empty and looks like Netscape format.
-    Avoids yt-dlp complaining about invalid cookies.txt.
-    """
-    path = str(COOKIE_PATH)
-    try:
-        if not path or not os.path.exists(path) or os.path.getsize(path) <= 0:
-            return None
-
-        with open(path, "rb") as f:
-            header = f.read(256)
-
-        if b"Netscape HTTP Cookie File" in header:
-            return path
-        return None
-    except Exception:
-        return None
+import config
+from config import BANNED_USERS, lyrical  # Removed AYU
+from AnnieXMedia import Apple, Resso, SoundCloud, Spotify, Telegram, YouTube, app
+from AnnieXMedia.core.call import StreamController
+from AnnieXMedia.utils import seconds_to_min, time_to_seconds
+from AnnieXMedia.utils.channelplay import get_channeplayCB
+from AnnieXMedia.utils.decorators.language import languageCB
+from AnnieXMedia.utils.decorators.play import PlayWrapper
+from AnnieXMedia.utils.errors import capture_err, capture_callback_err
+from AnnieXMedia.utils.formatters import formats
+from AnnieXMedia.utils.inline import (
+    botplaylist_markup,
+    livestream_markup,
+    playlist_markup,
+    slider_markup,
+    track_markup,
+)
+from AnnieXMedia.utils.logger import play_logs
+from AnnieXMedia.utils.stream.stream import stream
 
 
-def _cookies_args() -> List[str]:
-    path = _cookiefile_path()
-    return ["--cookies", path] if path else []
+# --- JSON ANTI-SPAM LOGIC START ---
 
+SPAM_FILE = "spam_stats.json"
+SPAM_DATA = {}
 
-async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
-    # Force no cache directory for all subprocess calls to save Disk I/O
-    cmd_args = list(args)
-    if "yt-dlp" in cmd_args[0]:
-        cmd_args.insert(1, "--no-cache-dir")
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd_args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        return await asyncio.wait_for(proc.communicate(), timeout=YTDLP_TIMEOUT)
-    except asyncio.TimeoutError:
-        with contextlib.suppress(Exception):
-            proc.kill()
-        return b"", b"timeout"
-
-
-def _dig(data: Any, *path: Union[str, int]) -> Any:
-    """Python port of the Go 'dig' function."""
-    cur = data
-    for p in path:
-        if isinstance(p, str):
-            if isinstance(cur, dict):
-                cur = cur.get(p)
-            else:
-                return None
-        elif isinstance(p, int):
-            if isinstance(cur, list) and 0 <= p < len(cur):
-                cur = cur[p]
-            else:
-                return None
-        else:
-            return None
-    return cur
-
-
-def _parse_duration(s: str) -> int:
-    """Python port of the Go 'parseDuration' function."""
-    if not s: return 0
-    parts = s.split(":")
-    total = 0
-    mul = 1
-    for part in reversed(parts):
+def load_spam_data():
+    """Loads warnings and blocks from JSON file on startup."""
+    global SPAM_DATA
+    if os.path.exists(SPAM_FILE):
         try:
-            val = int("".join(filter(str.isdigit, part)))
-            total += val * mul
-            mul *= 60
-        except ValueError:
-            pass
-    return total
+            with open(SPAM_FILE, "r") as f:
+                data = json.load(f)
+                SPAM_DATA = data
+        except Exception as e:
+            print(f"Error loading spam data: {e}")
+            SPAM_DATA = {}
+    else:
+        SPAM_DATA = {}
 
-
-@capture_internal_err
-async def cached_youtube_search(query: str) -> List[Dict]:
-    """
-    Stateless wrapper. No longer uses local RAM cache.
-    Always performs a fresh VideosSearch.
-    """
+def save_spam_data():
+    """Saves the current SPAM_DATA to JSON file."""
     try:
-        data = await VideosSearch(query, limit=1).next()
-        result = data.get("result", [])
-        return result
-    except Exception:
-        return []
+        with open(SPAM_FILE, "w") as f:
+            json.dump(SPAM_DATA, f, indent=4)
+    except Exception as e:
+        print(f"Error saving spam data: {e}")
 
+# Load data immediately when this file is imported
+load_spam_data()
 
-# === Main Class ===
-class YouTubeAPI:
-    def __init__(self) -> None:
-        self.base_url = "https://www.youtube.com/watch?v="
-        self.playlist_url = "https://youtube.com/playlist?list="
-        self._url_pattern = re.compile(r"(?:youtube\.com|youtu\.be)")
+async def check_spam_status(user_id: int, query: str):
+    """
+    Checks spam status with professional messages and support link.
+    """
+    current_time = time.time()
+    user_id_str = str(user_id) # JSON keys must be strings
 
-    def _prepare_link(self, link: str, videoid: Union[str, bool, None] = None) -> str:
-        if isinstance(videoid, str) and videoid.strip():
-            link = self.base_url + videoid.strip()
+    # Initialize user if not present
+    if user_id_str not in SPAM_DATA:
+        SPAM_DATA[user_id_str] = {"history": [], "warnings": 0, "blocked_until": 0}
 
-        link = link.strip()
+    user_data = SPAM_DATA[user_id_str]
 
-        if "youtu.be" in link:
-            link = self.base_url + link.split("/")[-1].split("?")[0]
-        elif "youtube.com/shorts/" in link or "youtube.com/live/" in link:
-            link = self.base_url + link.split("/")[-1].split("?")[0]
-
-        return link.split("&")[0]
-
-    # === URL Handling ===
-    @capture_internal_err
-    async def exists(self, link: str, videoid: Union[str, bool, None] = None) -> bool:
-        return bool(self._url_pattern.search(self._prepare_link(link, videoid)))
-
-    @capture_internal_err
-    async def url(self, message: Message) -> Optional[str]:
-        msgs = [message] + ([message.reply_to_message] if message.reply_to_message else [])
-        for msg in msgs:
-            text = msg.text or msg.caption or ""
-            entities = (msg.entities or []) + (msg.caption_entities or [])
-            for ent in entities:
-                if ent.type == MessageEntityType.URL:
-                    return text[ent.offset: ent.offset + ent.length].split("&si")[0]
-                if ent.type == MessageEntityType.TEXT_LINK:
-                    return ent.url.split("&si")[0]
-        return None
-
-    async def _ensure_watch_url(self, maybe_query_or_url: str) -> Optional[str]:
-        prepared = self._prepare_link(maybe_query_or_url)
-        if prepared.startswith("http"):
-            return prepared
-        info = await self._fetch_video_info(prepared)
-        if info and info.get("id"):
-             return self.base_url + info["id"]
-        return None
-
-    # === Internal Search Methods ===
-    def _recursive_parse(self, node: Any, limit: int = 1) -> List[Dict]:
-        """Recursive parser ported from Go's 'parseResults'."""
-        tracks = []
+    # 1. CHECK IF USER IS BLOCKED
+    if user_data["blocked_until"] > current_time:
+        remaining_seconds = user_data["blocked_until"] - current_time
+        remaining_hours = int(remaining_seconds / 3600)
+        remaining_mins = int((remaining_seconds % 3600) / 60)
         
-        # If list, iterate items
-        if isinstance(node, list):
-            for item in node:
-                tracks.extend(self._recursive_parse(item, limit))
-                if len(tracks) >= limit:
-                    break
-            return tracks
-
-        # If dict, check for videoRenderer
-        if isinstance(node, dict):
-            vr = _dig(node, "videoRenderer")
-            if vr:
-                # Check for LIVE badge
-                is_live = False
-                badges = vr.get("badges", [])
-                for badge in badges:
-                    style = _dig(badge, "metadataBadgeRenderer", "style")
-                    if style == "BADGE_STYLE_TYPE_LIVE_NOW":
-                        is_live = True
-                        break
-                
-                # Extract Data
-                vid_id = vr.get("videoId")
-                title = _dig(vr, "title", "runs", 0, "text")
-                duration_text = _dig(vr, "lengthText", "simpleText")
-
-                if not is_live and vid_id and title and duration_text:
-                    thumb = _dig(vr, "thumbnail", "thumbnails", 0, "url")
-                    
-                    return [{
-                        "id": vid_id,
-                        "title": title,
-                        "duration": duration_text,
-                        "thumbnail": thumb,
-                        "thumbnails": [{"url": thumb}],
-                        "link": f"https://www.youtube.com/watch?v={vid_id}"
-                    }]
-
-            # Recurse into values if not a videoRenderer
-            for value in node.values():
-                tracks.extend(self._recursive_parse(value, limit))
-                if len(tracks) >= limit:
-                    break
-                    
-        return tracks
-
-    async def _raw_youtube_search(self, query: str) -> Optional[Dict]:
-        """Manual implementation of InnerTube search (Go port)."""
-        endpoint = "https://www.youtube.com/youtubei/v1/search?key=AIzaSyCDCG4LCrByczUR8oYZKj-43dW-JqVIPHk"
-        
-        payload = {
-            "context": {
-                "client": {
-                    "clientName": "WEB",
-                    "clientVersion": "2.20250101.01.00", 
-                    "hl": "en",
-                    "gl": "IN",
-                },
-            },
-            "query": query,
-        }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(endpoint, json=payload) as resp:
-                    if resp.status != 200:
-                        return None
-                    data = await resp.json()
-        except Exception:
-            return None
-
-        # Start parsing from the specific root mentioned in Go code
-        root = _dig(
-            data,
-            "contents",
-            "twoColumnSearchResultsRenderer",
-            "primaryContents",
-            "sectionListRenderer",
-            "contents",
+        msg = (
+            f"🚫 **Access Restricted**\n\n"
+            f"You have been temporarily banned from using the bot for **{remaining_hours}h {remaining_mins}m** due to repeated spamming.\n\n"
+            f"👮‍♂️ **Reason:** Excessive request flooding.\n"
+            f"ℹ️ **For more details contact:** [Support Chat](https://t.me/ArcChatz)"
         )
-        
-        results = self._recursive_parse(root, limit=1)
-        return results[0] if results else None
+        return True, msg
 
-    # === Metadata Fetching ===
-    @capture_internal_err
-    async def _fetch_video_info(self, query: str, *, use_cache: bool = False) -> Optional[Dict]:
-        """
-        Robust fetcher: 
-        1. Extract ID from URL (if possible) -> Manual InnerTube Search (Fastest)
-        2. yt-dlp (Fallback)
-        """
-        q = self._prepare_link(query)
-        
-        # 1. OPTIMIZATION: Extract ID if it is a URL
-        # Searching by ID (11 chars) is extremely fast on YouTube InnerTube
-        vid_id = None
-        if "youtube.com/watch?v=" in q:
-            try:
-                vid_id = q.split("v=")[1].split("&")[0]
-            except: pass
-        elif "youtu.be/" in q:
-            try:
-                vid_id = q.split("youtu.be/")[1].split("?")[0]
-            except: pass
-        
-        # Use ID if found, otherwise use the full query
-        search_term = vid_id if vid_id else q
+    # 2. CLEAN UP OLD HISTORY (Keep only requests from last 10 seconds)
+    user_data["history"] = [
+        (q, t) for q, t in user_data["history"] 
+        if current_time - t < 10
+    ]
 
-        # 2. Try Raw InnerTube Request (Fast & Lightweight)
-        # This works for IDs, Keywords, and URLs.
-        raw_res = await self._raw_youtube_search(search_term)
-        if raw_res:
-             return raw_res
+    # 3. ADD CURRENT REQUEST
+    user_data["history"].append((query, current_time))
 
-        # 3. Fallback: yt-dlp (Slower, but very robust)
-        try:
-            search_query = q if q.startswith("http") else f"ytsearch1:{q}"
+    # 4. COUNT DUPLICATES
+    same_query_count = len([q for q, t in user_data["history"] if q == query])
+
+    # 5. TRIGGER SPAM DETECTION
+    if same_query_count >= 4:
+        user_data["warnings"] += 1
+        user_data["history"] = []  # Reset history to prevent immediate re-trigger
+        
+        if user_data["warnings"] >= 3:
+            # BLOCK FOR 24 HOURS
+            user_data["blocked_until"] = current_time + 86400
+            user_data["warnings"] = 0  # Reset warnings
+            save_spam_data() # SAVE TO JSON
             
-            stdout, _ = await _exec_proc(
-                "yt-dlp",
-                *(_cookies_args()),
-                "--dump-json",
-                "--no-warnings",
-                "--ignore-errors",
-                search_query
+            msg = (
+                f"🛑 **Account Blocked**\n\n"
+                f"You have been banned for **24 hours** for violating our spam policy.\n\n"
+                f"ℹ️ **For more details contact:** [Support Chat](https://t.me/ArcChatz)"
+            )
+            return True, msg
+        else:
+            # SEND WARNING
+            save_spam_data() # SAVE TO JSON
+            
+            msg = (
+                f"⚠️ **Action Required: Slow Down**\n\n"
+                f"You are sending requests too quickly. Please wait a moment before trying again.\n\n"
+                f"🚨 **Warnings:** {user_data['warnings']}/3\n"
+                f"*(Next violation will result in a 24-hour ban)*\n\n"
+                f"ℹ️ **For more details contact:** [Support Chat](https://t.me/ArcChatz)"
+            )
+            return True, msg
+    
+    return False, None
+# --- JSON ANTI-SPAM LOGIC END ---
+
+
+@app.on_message(
+    filters.command(
+        [
+            "play",
+            "vplay",
+            "cplay",
+            "cvplay",
+            "playforce",
+            "vplayforce",
+            "cplayforce",
+            "cvplayforce",
+        ]
+    )
+    & filters.group
+    & ~BANNED_USERS
+)
+@PlayWrapper
+@capture_err
+async def play_command(
+    client,
+    message: Message,
+    _,
+    chat_id,
+    video,
+    channel,
+    playmode,
+    url,
+    fplay,
+):
+    # --- SPAM CHECK INTEGRATION ---
+    user_id = message.from_user.id
+    query_text = message.text or ""
+    
+    is_spam, spam_msg = await check_spam_status(user_id, query_text)
+    if is_spam:
+        return await message.reply_text(spam_msg, disable_web_page_preview=True)
+    # -----------------------------
+
+    try:
+        mystic = await message.reply_text(
+            _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
+        )
+    except FloodWait as e:
+        await asyncio.sleep(e.value)
+        mystic = await message.reply_text(
+            _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
+        )
+    except RandomIdDuplicate:
+        mystic = await app.send_message(
+            message.chat.id,
+            _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**",
+        )
+
+    plist_id, plist_type, spotify, slider = None, None, None, None
+    internal_type, log_label = None, None
+    user_id = message.from_user.id
+    user_name = message.from_user.first_name
+
+    audio_telegram = (
+        (message.reply_to_message.audio or message.reply_to_message.voice)
+        if message.reply_to_message
+        else None
+    )
+
+    if audio_telegram:
+        if audio_telegram.file_size > config.TG_AUDIO_FILESIZE_LIMIT:
+            return await mystic.edit_text(_["play_5"])
+
+        duration_min = seconds_to_min(audio_telegram.duration)
+        if audio_telegram.duration > config.DURATION_LIMIT:
+            return await mystic.edit_text(
+                _["play_6"].format(config.DURATION_LIMIT_MIN, app.mention)
             )
 
-            if stdout:
-                info = json.loads(stdout.decode())
-                
-                if "entries" in info:
-                    info = info["entries"][0] if info["entries"] else {}
+        file_path = await Telegram.get_filepath(audio=audio_telegram)
+        downloaded = await Telegram.download(_, message, mystic, file_path)
+        if downloaded:
+            message_link = await Telegram.get_link(message)
+            file_name = await Telegram.get_filename(audio_telegram, audio=True)
+            dur = await Telegram.get_duration(audio_telegram, file_path)
 
-                if not info:
-                    return None
+            details = {
+                "title": file_name,
+                "link": message_link,
+                "path": file_path,
+                "dur": dur,
+            }
 
-                return {
-                    "id": info.get("id"),
-                    "title": info.get("title"),
-                    "duration": info.get("duration_string") or str(info.get("duration", 0)),
-                    "thumbnails": [{"url": info.get("thumbnail", "")}],
-                    "thumbnail": info.get("thumbnail", ""),
-                    "link": info.get("webpage_url", q)
-                }
-        except Exception:
-            pass
+            try:
+                internal_type = "telegram"
+                await stream(
+                    _,
+                    mystic,
+                    user_id,
+                    details,
+                    chat_id,
+                    user_name,
+                    message.chat.id,
+                    streamtype=internal_type,
+                    forceplay=bool(fplay),
+                )
+            except Exception as e:
+                err = (
+                    e
+                    if type(e).__name__ == "AssistantErr"
+                    else _["general_2"].format(type(e).__name__)
+                )
+                return await mystic.edit_text(err)
 
-        return None
+            caption_query = message.reply_to_message.caption or "—"
+            await play_logs(message, streamtype="Telegram [Audio]", query=caption_query)
+            return await mystic.delete()
+        return
 
-    @capture_internal_err
-    async def is_live(self, link: str) -> bool:
-        prepared = self._prepare_link(link)
-        stdout, _ = await _exec_proc("yt-dlp", *(_cookies_args()), "--dump-json", prepared)
-        if not stdout:
-            return False
-        try:
-            info = json.loads(stdout.decode())
-            return bool(info.get("is_live"))
-        except json.JSONDecodeError:
-            return False
+    video_telegram = (
+        (message.reply_to_message.video or message.reply_to_message.document)
+        if message.reply_to_message
+        else None
+    )
 
-    @capture_internal_err
-    async def details(
-        self, link: str, videoid: Union[str, bool, None] = None
-    ) -> Tuple[str, Optional[str], int, str, str]:
-        prepared_link = self._prepare_link(link, videoid)
-        info = await self._fetch_video_info(prepared_link)
-
-        # === Fallback: Manual ID extraction if API fails ===
-        if not info:
-            if "watch?v=" in prepared_link:
-                try:
-                    vid_id = prepared_link.split("v=")[-1].split("&")[0]
-                    if len(vid_id) == 11:  # Simple validation
-                        info = {
-                            "id": vid_id,
-                            "title": "Unknown",
-                            "duration": "00:00",
-                            "thumbnail": "",
-                            "link": prepared_link
-                        }
-                except Exception:
-                    pass
-
-        if not info:
-            raise ValueError(f"Video not found for: {prepared_link}")
-
-        # === Safe Data Extraction ===
-        title = info.get("title") or "Unknown"
-        dt = info.get("duration") or "00:00"
-        
-        try:
-            ds = int(time_to_seconds(dt)) if dt else 0
-        except Exception:
-            ds = 0
-
-        thumbs = info.get("thumbnails", [{}])
-        thumb_url = info.get("thumbnail") or (thumbs[-1].get("url") if thumbs else "") or ""
-        thumb = thumb_url.split("?")[0]
-
-        return title, dt, ds, thumb, info.get("id", "")
-
-    @capture_internal_err
-    async def title(self, link: str, videoid: Union[str, bool, None] = None) -> str:
-        info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        return info.get("title", "") if info else ""
-
-    @capture_internal_err
-    async def duration(self, link: str, videoid: Union[str, bool, None] = None) -> Optional[str]:
-        info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        return info.get("duration") if info else None
-
-    @capture_internal_err
-    async def thumbnail(self, link: str, videoid: Union[str, bool, None] = None) -> str:
-        info = await self._fetch_video_info(self._prepare_link(link, videoid))
-        return (
-            info.get("thumbnail")
-            or info.get("thumbnails", [{}])[-1].get("url", "")
-        ).split("?")[0] if info else ""
-
-    @capture_internal_err
-    async def track(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[Dict, str]:
-        prepared_link = self._prepare_link(link, videoid)
-        info = await self._fetch_video_info(prepared_link)
-        
-        # === Fallback: Manual ID extraction if API fails ===
-        if not info:
-            if "watch?v=" in prepared_link:
-                try:
-                    vid_id = prepared_link.split("v=")[-1].split("&")[0]
-                    if len(vid_id) == 11:
-                        info = {
-                            "id": vid_id,
-                            "title": "Unknown",
-                            "duration": "00:00",
-                            "thumbnail": "",
-                            "link": prepared_link
-                        }
-                except Exception:
-                    pass
-
-        if not info:
-            raise ValueError(f"Could not fetch info for '{prepared_link}' via any method.")
-
-        # === Safe Data Extraction ===
-        thumbs = info.get("thumbnails", [{}])
-        thumb_url = info.get("thumbnail") or (thumbs[-1].get("url") if thumbs else "") or ""
-        thumb = thumb_url.split("?")[0]
-
-        details = {
-            "title": info.get("title") or "Unknown",
-            "link": info.get("link") or prepared_link,
-            "vidid": info.get("id", ""),
-            "duration_min": info.get("duration") or "00:00",
-            "thumb": thumb,
-        }
-        return details, info.get("id", "")
-
-    # === Media & Formats ===
-    @capture_internal_err
-    async def video(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[int, str]:
-        link = self._prepare_link(link, videoid)
-        stdout, stderr = await _exec_proc(
-            "yt-dlp",
-            *(_cookies_args()),
-            "-g",
-            "-f",
-            "best[height<=?720][width<=?1280]",
-            link,
-        )
-        return (1, stdout.decode().split("\n")[0]) if stdout else (0, stderr.decode())
-
-    @capture_internal_err
-    async def playlist(
-        self, link: str, limit: int, user_id, videoid: Union[str, bool, None] = None
-    ) -> List[str]:
-        if videoid:
-            link = self.playlist_url + str(videoid)
-        link = self._prepare_link(link).split("&")[0]
-
-        try:
-            plist = await Playlist.get(link)
-            items = [video.get("id") for video in plist.get("videos", [])[:limit] if video.get("id")]
-            if items:
-                return items
-        except Exception:
-            pass
-
-        stdout, _ = await _exec_proc(
-            "yt-dlp",
-            *(_cookies_args()),
-            "-i",
-            "--get-id",
-            "--flat-playlist",
-            "--playlist-end",
-            str(limit),
-            "--skip-download",
-            link,
-        )
-        items = stdout.decode().strip().split("\n") if stdout else []
-        return [i for i in items if i]
-
-    @capture_internal_err
-    async def formats(
-        self, link: str, videoid: Union[str, bool, None] = None
-    ) -> Tuple[List[Dict], str]:
-        link = self._prepare_link(link, videoid)
-        
-        opts = {
-            "quiet": True,
-            "no_cache_dir": True,
-        }
-        if cf := _cookiefile_path():
-            opts["cookiefile"] = cf
-
-        out: List[Dict] = []
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(link, download=False)
-                for fmt in info.get("formats", []):
-                    if "dash" in str(fmt.get("format", "")).lower():
-                        continue
-                    if not any(k in fmt for k in ("filesize", "filesize_approx")):
-                        continue
-                    if not all(k in fmt for k in ("format", "format_id", "ext", "format_note")):
-                        continue
-                    size = fmt.get("filesize") or fmt.get("filesize_approx")
-                    if not size:
-                        continue
-                    out.append(
-                        {
-                            "format": fmt["format"],
-                            "filesize": size,
-                            "format_id": fmt["format_id"],
-                            "ext": fmt["ext"],
-                            "format_note": fmt["format_note"],
-                            "yturl": link,
-                        }
+    if video_telegram:
+        if message.reply_to_message.document:
+            try:
+                ext = (video_telegram.file_name or "").split(".")[-1]
+                if ext.lower() not in formats:
+                    return await mystic.edit_text(
+                        _["play_7"].format(" | ".join(formats))
                     )
-        except Exception:
-            pass
+            except Exception:
+                return await mystic.edit_text(_["play_7"].format(" | ".join(formats)))
 
-        return out, link
+        if video_telegram.file_size > config.TG_VIDEO_FILESIZE_LIMIT:
+            return await mystic.edit_text(_["play_8"])
 
-    @capture_internal_err
-    async def slider(
-        self, link: str, query_type: int, videoid: Union[str, bool, None] = None
-    ) -> Tuple[str, Optional[str], str, str]:
+        file_path = await Telegram.get_filepath(video=video_telegram)
+        downloaded = await Telegram.download(_, message, mystic, file_path)
+        if downloaded:
+            message_link = await Telegram.get_link(message)
+            file_name = await Telegram.get_filename(video_telegram)
+            dur = await Telegram.get_duration(video_telegram, file_path)
+
+            details = {
+                "title": file_name,
+                "link": message_link,
+                "path": file_path,
+                "dur": dur,
+            }
+
+            try:
+                internal_type = "telegram"
+                await stream(
+                    _,
+                    mystic,
+                    user_id,
+                    details,
+                    chat_id,
+                    user_name,
+                    message.chat.id,
+                    video=True,
+                    streamtype=internal_type,
+                    forceplay=bool(fplay),
+                )
+            except Exception as e:
+                err = (
+                    e
+                    if type(e).__name__ == "AssistantErr"
+                    else _["general_2"].format(type(e).__name__)
+                )
+                return await mystic.edit_text(err)
+
+            caption_query = message.reply_to_message.caption or "—"
+            await play_logs(message, streamtype="Telegram [Video]", query=caption_query)
+            return await mystic.delete()
+        return
+
+    if url:
+        if await YouTube.exists(url):
+            if "playlist" in url:
+                try:
+                    details = await YouTube.playlist(
+                        url, config.PLAYLIST_FETCH_LIMIT, user_id
+                    )
+                except Exception as e:
+                    return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+                plist_type = "yt"
+                plist_id = (
+                    (url.split("="))[1].split("&")[0] if "&" in url else (url.split("="))[1]
+                )
+                img = config.PLAYLIST_IMG_URL
+                cap = _["play_9"]
+                internal_type = "playlist"
+                log_label = "Youtube playlist"
+
+            else:
+                try:
+                    details, track_id = await YouTube.track(url)
+                except Exception as e:
+                    return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+                img = details["thumb"]
+                cap = _["play_10"].format(details["title"], details["duration_min"])
+                u = url.lower()
+                internal_type = "youtube"
+                log_label = "Youtube shorts" if "youtube.com/shorts/" in u else "Youtube Track"
+
+        elif await Spotify.valid(url):
+            spotify = True
+            if not config.SPOTIFY_CLIENT_ID or not config.SPOTIFY_CLIENT_SECRET:
+                return await mystic.edit_text(
+                    "»  sᴘᴏᴛɪғʏ ɪs ɴᴏᴛ sᴜᴘᴘᴏʀᴛᴇᴅ ʏᴇᴛ.\n\nᴘʟᴇᴀsᴇ ᴛʀʏ ᴀɢᴀɪɴ ʟᴀᴛᴇʀ."
+                )
+
+            if "track" in url:
+                try:
+                    details, track_id = await Spotify.track(url)
+                except Exception as e:
+                    return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+                img = details["thumb"]
+                cap = _["play_10"].format(details["title"], details["duration_min"])
+                internal_type = "youtube"
+                log_label = "Spotify Track"
+
+            elif "playlist" in url:
+                try:
+                    details, plist_id = await Spotify.playlist(url)
+                except Exception as e:
+                    return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+                plist_type = "spplay"
+                img = config.SPOTIFY_PLAYLIST_IMG_URL
+                cap = _["play_11"].format(app.mention, message.from_user.mention)
+                internal_type = "playlist"
+                log_label = "Spotify playlist"
+
+            elif "album" in url:
+                try:
+                    details, plist_id = await Spotify.album(url)
+                except Exception as e:
+                    return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+                plist_type = "spalbum"
+                img = config.SPOTIFY_ALBUM_IMG_URL
+                cap = _["play_11"].format(app.mention, message.from_user.mention)
+                internal_type = "playlist"
+                log_label = "Spotify album"
+
+            elif "artist" in url:
+                try:
+                    details, plist_id = await Spotify.artist(url)
+                except Exception as e:
+                    return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+                plist_type = "spartist"
+                img = config.SPOTIFY_ARTIST_IMG_URL
+                cap = _["play_11"].format(message.from_user.first_name)
+                internal_type = "playlist"
+                log_label = "Spotify artist"
+
+            else:
+                return await mystic.edit_text(_["play_15"])
+
+        elif await Apple.valid(url):
+            if "album" in url or "/song/" in url:
+                try:
+                    details, track_id = await Apple.track(url)
+                except Exception as e:
+                    return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+                img = details["thumb"]
+                cap = _["play_10"].format(details["title"], details["duration_min"])
+                internal_type = "youtube"
+                log_label = "Apple Music"
+
+            elif "playlist" in url:
+                spotify = True
+                try:
+                    details, plist_id = await Apple.playlist(url)
+                except Exception as e:
+                    return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+                plist_type = "apple"
+                img = url
+                cap = _["play_12"].format(app.mention, message.from_user.mention)
+                internal_type = "playlist"
+                log_label = "Apple Music playlist"
+
+            else:
+                return await mystic.edit_text(_["play_3"])
+
+        elif await Resso.valid(url):
+            try:
+                details, track_id = await Resso.track(url)
+            except Exception as e:
+                return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+            img = details["thumb"]
+            cap = _["play_10"].format(details["title"], details["duration_min"])
+            internal_type = "youtube"
+            log_label = "Resso"
+
+        elif await SoundCloud.valid(url):
+            try:
+                details, track_path = await SoundCloud.download(url)
+            except Exception as e:
+                return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+            if details["duration_sec"] > config.DURATION_LIMIT:
+                return await mystic.edit_text(
+                    _["play_6"].format(config.DURATION_LIMIT_MIN, app.mention)
+                )
+
+            try:
+                internal_type = "soundcloud"
+                await stream(
+                    _,
+                    mystic,
+                    user_id,
+                    details,
+                    chat_id,
+                    user_name,
+                    message.chat.id,
+                    streamtype=internal_type,
+                    forceplay=bool(fplay),
+                )
+            except Exception as e:
+                err = (
+                    e
+                    if type(e).__name__ == "AssistantErr"
+                    else _["general_2"].format(type(e).__name__)
+                )
+                return await mystic.edit_text(err)
+
+            await play_logs(message, streamtype="Soundcloud")
+            return await mystic.delete()
+
+        else:
+            try:
+                await StreamController.stream_call(url)
+            except NoActiveGroupCall:
+                await mystic.edit_text(_["black_9"])
+                return await app.send_message(
+                    chat_id=config.LOGGER_ID,
+                    text=_["play_17"],
+                )
+            except Exception as e:
+                return await mystic.edit_text(_["general_2"].format(type(e).__name__))
+
+            await mystic.edit_text(_["str_2"])
+            try:
+                internal_type = "index"
+                await stream(
+                    _,
+                    mystic,
+                    user_id,
+                    url,
+                    chat_id,
+                    user_name,
+                    message.chat.id,
+                    video=bool(video),
+                    streamtype=internal_type,
+                    forceplay=bool(fplay),
+                )
+            except Exception as e:
+                err = (
+                    e
+                    if type(e).__name__ == "AssistantErr"
+                    else _["general_2"].format(type(e).__name__)
+                )
+                return await mystic.edit_text(err)
+
+            return await play_logs(message, streamtype="M3U8 or Index Link")
+
+    else:
+        if len(message.command) < 2:
+            buttons = botplaylist_markup(_)
+            return await mystic.edit_text(
+                _["play_18"],
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+
+        slider = True
+        query = message.text.split(None, 1)[1]
+        if "-v" in query:
+            query = query.replace("-v", "")
+
         try:
-            data = await VideosSearch(self._prepare_link(link, videoid), limit=10).next()
-            results = data.get("result", [])
-        except Exception:
-            query = self._prepare_link(link, videoid)
-            stdout, _ = await _exec_proc(
-                "yt-dlp", 
-                *(_cookies_args()), 
-                "--dump-json", 
-                "--default-search", 
-                "ytsearch10", 
-                "--no-playlist", 
-                query
+            details, track_id = await YouTube.track(query)
+        except Exception as e:
+            return await mystic.edit_text(f"{_['play_3']}\nʀᴇᴀsᴏɴ: {e}")
+
+        internal_type = "youtube"
+        log_label = "Youtube Track"
+
+    if str(playmode) == "Direct":
+        if not plist_type:
+            if details.get("duration_min"):
+                duration_sec = time_to_seconds(details["duration_min"])
+                if duration_sec and duration_sec > config.DURATION_LIMIT:
+                    return await mystic.edit_text(
+                        _["play_6"].format(config.DURATION_LIMIT_MIN, app.mention)
+                    )
+            else:
+                buttons = livestream_markup(
+                    _,
+                    track_id,
+                    user_id,
+                    "v" if video else "a",
+                    "c" if channel else "g",
+                    "f" if fplay else "d",
+                )
+                return await mystic.edit_text(
+                    _["play_13"],
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+
+        try:
+            await stream(
+                _,
+                mystic,
+                user_id,
+                details,
+                chat_id,
+                user_name,
+                message.chat.id,
+                video=bool(video),
+                streamtype=internal_type,
+                spotify=spotify,
+                forceplay=bool(fplay),
             )
-            results = []
-            if stdout:
-                for line in stdout.decode().split("\n"):
-                    if not line: continue
-                    try:
-                        v = json.loads(line)
-                        results.append({
-                            "title": v.get("title"),
-                            "duration": v.get("duration_string"),
-                            "thumbnails": [{"url": v.get("thumbnail")}],
-                            "id": v.get("id")
-                        })
-                    except: pass
-        
-        if not results or query_type >= len(results):
-            raise IndexError(
-                f"Query type index {query_type} out of range (found {len(results)} results)"
+        except Exception as e:
+            err = (
+                e
+                if type(e).__name__ == "AssistantErr"
+                else _["general_2"].format(type(e).__name__)
             )
-        r = results[query_type]
-        return (
-            r.get("title", ""),
-            r.get("duration"),
-            r.get("thumbnails", [{}])[-1].get("url", "").split("?")[0],
-            r.get("id", ""),
+            return await mystic.edit_text(err)
+
+        await mystic.delete()
+        return await play_logs(message, streamtype=log_label)
+
+    else:
+        if plist_type:
+            ran_hash = "".join(
+                random.choices(string.ascii_uppercase + string.digits, k=10)
+            )
+            lyrical[ran_hash] = plist_id
+            buttons = playlist_markup(
+                _,
+                ran_hash,
+                user_id,
+                plist_type,
+                "c" if channel else "g",
+                "f" if fplay else "d",
+            )
+            await mystic.delete()
+            await message.reply_photo(
+                photo=(
+                    details["thumb"]
+                    if plist_type == "yt"
+                    else (details if plist_type == "apple" else img)
+                ),
+                caption=cap,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+            plist_label_map = {
+                "yt": "Youtube playlist",
+                "spplay": "Spotify playlist",
+                "spalbum": "Spotify album",
+                "spartist": "Spotify artist",
+                "apple": "Apple Music playlist",
+            }
+            return await play_logs(
+                message, streamtype=plist_label_map.get(plist_type, "Playlist")
+            )
+
+        else:
+            if slider:
+                buttons = slider_markup(
+                    _,
+                    track_id,
+                    user_id,
+                    query,
+                    0,
+                    "c" if channel else "g",
+                    "f" if fplay else "d",
+                )
+                await mystic.delete()
+                await message.reply_photo(
+                    photo=details["thumb"],
+                    caption=_["play_10"].format(
+                        details["title"].title(),
+                        details["duration_min"],
+                    ),
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+                return await play_logs(message, streamtype="Searched on YouTube")
+
+            else:
+                buttons = track_markup(
+                    _,
+                    track_id,
+                    user_id,
+                    "c" if channel else "g",
+                    "f" if fplay else "d",
+                )
+                await mystic.delete()
+                await message.reply_photo(
+                    photo=details["thumb"],
+                    caption=_["play_10"].format(
+                        details["title"],
+                        details["duration_min"],
+                    ),
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                )
+                return await play_logs(message, streamtype="URL Search Inline")
+
+
+@app.on_callback_query(filters.regex("MusicStream") & ~BANNED_USERS)
+@languageCB
+@capture_callback_err
+async def play_music(client, CallbackQuery, _):
+    try:
+        callback_data = CallbackQuery.data.split(None, 1)[1]
+        vidid, user_id, mode, cplay, fplay = callback_data.split("|")
+
+        if CallbackQuery.from_user.id != int(user_id):
+            return await CallbackQuery.answer(_["playcb_1"], show_alert=True)
+
+        chat_id, channel = await get_channeplayCB(_, cplay, CallbackQuery)
+
+        user_name = CallbackQuery.from_user.first_name
+        await CallbackQuery.message.delete()
+        await CallbackQuery.answer()
+
+        try:
+            mystic = await CallbackQuery.message.reply_text(
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
+            )
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            mystic = await CallbackQuery.message.reply_text(
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
+            )
+        except RandomIdDuplicate:
+            mystic = await app.send_message(
+                CallbackQuery.message.chat.id,
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**",
+            )
+
+        details, track_id = await YouTube.track(vidid, videoid=vidid)
+
+        if details.get("duration_min"):
+            duration_sec = time_to_seconds(details["duration_min"])
+            if duration_sec and duration_sec > config.DURATION_LIMIT:
+                return await mystic.edit_text(
+                    _["play_6"].format(config.DURATION_LIMIT_MIN, app.mention)
+                )
+        else:
+            buttons = livestream_markup(
+                _,
+                track_id,
+                CallbackQuery.from_user.id,
+                mode,
+                "c" if cplay == "c" else "g",
+                "f" if fplay else "d",
+            )
+            return await mystic.edit_text(
+                _["play_13"], reply_markup=InlineKeyboardMarkup(buttons)
+            )
+
+        video = mode == "v"
+        forceplay = fplay == "f"
+
+        await stream(
+            _,
+            mystic,
+            CallbackQuery.from_user.id,
+            details,
+            chat_id,
+            user_name,
+            CallbackQuery.message.chat.id,
+            bool(video),
+            streamtype="youtube",
+            forceplay=bool(forceplay),
         )
 
-    @capture_internal_err
-    async def download(
-        self,
-        link: str,
-        mystic,
-        *,
-        video: Union[bool, str, None] = None,
-        videoid: Union[str, bool, None] = None,
-    ) -> Union[Tuple[str, Optional[bool]], Tuple[None, None]]:
-        link = self._prepare_link(link, videoid)
+        await mystic.delete()
 
-        # === VIDEO MODE ===
-        if video:
-            if await self.is_live(link):
-                status, stream_url = await self.video(link)
-                if status == 1:
-                    return stream_url, None
-                return None, None
+    except Exception as e:
+        err = (
+            e
+            if type(e).__name__ == "AssistantErr"
+            else _["general_2"].format(type(e).__name__)
+        )
+        return await CallbackQuery.message.reply_text(err)
 
-            title = await self.title(link)
-            p = await media_download(link, "video", title)
-            return (p, True) if p else (None, None)
 
-        # === AUDIO MODE ===
-        title = await self.title(link)
-        p = await media_download(link, "audio", title)
-        return (p, True) if p else (None, None)
+@app.on_callback_query(filters.regex("AnonymousAdmin") & ~BANNED_USERS)
+@capture_callback_err
+async def anonymous_check(client, CallbackQuery):
+    try:
+        await CallbackQuery.answer(
+            "» ʀᴇᴠᴇʀᴛ ʙᴀᴄᴋ ᴛᴏ ᴜsᴇʀ ᴀᴄᴄᴏᴜɴᴛ :\n\n"
+            "ᴏᴘᴇɴ ʏᴏᴜʀ ɢʀᴏᴜᴘ sᴇᴛᴛɪɴɢs.\n"
+            "-> ᴀᴅᴍɪɴɪsᴛʀᴀᴛᴏʀs\n-> ᴄʟɪᴄᴋ ᴏɴ ʏᴏᴜʀ ɴᴀᴍᴇ\n"
+            "-> ᴜɴᴄʜᴇᴄᴋ ᴀɴᴏɴʏᴍᴏᴜs ᴀᴅᴍɪɴ ᴘᴇʀᴍɪssɪᴏɴs.",
+            show_alert=True,
+        )
+    except Exception:
+        pass
+
+
+@app.on_callback_query(filters.regex("AnniePlaylists") & ~BANNED_USERS)
+@languageCB
+@capture_callback_err
+async def play_playlists_command(client, CallbackQuery, _):
+    try:
+        callback_data = CallbackQuery.data.split(None, 1)[1]
+        videoid, user_id, ptype, mode, cplay, fplay = callback_data.split("|")
+
+        if CallbackQuery.from_user.id != int(user_id):
+            return await CallbackQuery.answer(_["playcb_1"], show_alert=True)
+
+        chat_id, channel = await get_channeplayCB(_, cplay, CallbackQuery)
+        user_name = CallbackQuery.from_user.first_name
+        await CallbackQuery.message.delete()
+        await CallbackQuery.answer()
+
+        try:
+            mystic = await CallbackQuery.message.reply_text(
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
+            )
+        except FloodWait as e:
+            await asyncio.sleep(e.value)
+            mystic = await CallbackQuery.message.reply_text(
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
+            )
+        except RandomIdDuplicate:
+            mystic = await app.send_message(
+                CallbackQuery.message.chat.id,
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**",
+            )
+
+        videoid = lyrical.get(videoid)
+        video = mode == "v"
+        forceplay = fplay == "f"
+        spotify = True
+
+        if ptype == "yt":
+            spotify = False
+            result = await YouTube.playlist(
+                "",
+                config.PLAYLIST_FETCH_LIMIT,
+                CallbackQuery.from_user.id,
+                videoid=videoid,
+            )
+            internal_type = "playlist"
+            log_label = "Youtube playlist"
+        elif ptype == "spplay":
+            result, _ = await Spotify.playlist(videoid)
+            internal_type = "playlist"
+            log_label = "Spotify playlist"
+        elif ptype == "spalbum":
+            result, _ = await Spotify.album(videoid)
+            internal_type = "playlist"
+            log_label = "Spotify album"
+        elif ptype == "spartist":
+            result, _ = await Spotify.artist(videoid)
+            internal_type = "playlist"
+            log_label = "Spotify artist"
+        elif ptype == "apple":
+            result, _ = await Apple.playlist(videoid, True)
+            internal_type = "playlist"
+            log_label = "Apple Music playlist"
+        else:
+            return
+
+        await stream(
+            _,
+            mystic,
+            CallbackQuery.from_user.id,
+            result,
+            chat_id,
+            user_name,
+            CallbackQuery.message.chat.id,
+            bool(video),
+            streamtype=internal_type,
+            spotify=spotify,
+            forceplay=bool(forceplay),
+        )
+
+        await play_logs(CallbackQuery.message, streamtype=log_label)
+        await mystic.delete()
+
+    except Exception as e:
+        err = (
+            e
+            if type(e).__name__ == "AssistantErr"
+            else _["general_2"].format(type(e).__name__)
+        )
+        return await CallbackQuery.message.reply_text(err)
+
+
+@app.on_callback_query(filters.regex("slider") & ~BANNED_USERS)
+@languageCB
+@capture_callback_err
+async def slider_queries(client, CallbackQuery, _):
+    try:
+        callback_data = CallbackQuery.data.split(None, 1)[1]
+        what, rtype, query, user_id, cplay, fplay = callback_data.split("|")
+
+        if CallbackQuery.from_user.id != int(user_id):
+            return await CallbackQuery.answer(_["playcb_1"], show_alert=True)
+
+        rtype = int(rtype)
+        query_type = (rtype + 1) if what == "F" else (rtype - 1)
+
+        if query_type > 9:
+            query_type = 0
+        if query_type < 0:
+            query_type = 9
+
+        title, duration_min, thumbnail, vidid = await YouTube.slider(
+            query, query_type
+        )
+
+        buttons = slider_markup(_, vidid, user_id, query, query_type, cplay, fplay)
+        med = InputMediaPhoto(
+            media=thumbnail,
+            caption=_["play_10"].format(
+                title.title(),
+                duration_min,
+            ),
+        )
+
+        await CallbackQuery.edit_message_media(
+            media=med, reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        await CallbackQuery.answer(_["playcb_2"])
+
+    except Exception:
+        pass
+
+
+@app.on_callback_query(filters.regex("suggestion") & ~BANNED_USERS)
+@languageCB
+@capture_callback_err
+async def suggestion_handler(client, CallbackQuery, _):
+    try:
+        # Data format: suggestion|vidid
+        callback_data = CallbackQuery.data.strip()
+        vidid = callback_data.split("|")[1] 
+    except Exception:
+        return await CallbackQuery.answer("Error parsing button", show_alert=True)
+
+    await CallbackQuery.answer("Processing Suggestion...", show_alert=False)
+    
+    chat_id = CallbackQuery.message.chat.id
+    user_id = CallbackQuery.from_user.id
+    user_name = CallbackQuery.from_user.first_name
+    
+    try:
+        await CallbackQuery.message.delete()
+    except:
+        pass
+
+    try:
+        mystic = await app.send_message(
+            chat_id,
+            "🔄 **Processing your request... Please wait.**"
+        )
+    except Exception:
+        # Fallback if sending failed for some reason
+        mystic = await app.send_message(chat_id, "🔄 **Processing...**")
+
+    try:
+        # Use robust URL construction
+        url = f"https://www.youtube.com/watch?v={vidid}"
+        details, track_id = await YouTube.track(url, videoid=vidid)
+        
+        await stream(
+            _,
+            mystic,
+            user_id,
+            details,
+            chat_id,
+            user_name,
+            chat_id,
+            video=False, # Default to audio for suggestions
+            streamtype="youtube",
+            forceplay=False,
+        )
+    except ValueError:
+        await mystic.edit_text("😕 **Unable to play this song.**\nIt may be region-restricted or unavailable. Please try another.")
+    except Exception as e:
+        if "mystic" in locals():
+            await mystic.edit_text(f"❌ **Error:** {e}")
+        else:
+            await app.send_message(chat_id, f"❌ **Error:** {e}")
