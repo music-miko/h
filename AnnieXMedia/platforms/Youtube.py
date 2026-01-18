@@ -217,7 +217,7 @@ class YouTubeAPI:
 
     async def _raw_youtube_search(self, query: str) -> Optional[Dict]:
         """Manual implementation of InnerTube search (Go port)."""
-        endpoint = "https://www.youtube.com/youtubei/v1/search?key=AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw"
+        endpoint = "https://www.youtube.com/youtubei/v1/search?key=AIzaSyCDCG4LCrByczUR8oYZKj-43dW-JqVIPHk"
         
         payload = {
             "context": {
