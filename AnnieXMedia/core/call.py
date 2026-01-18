@@ -46,9 +46,9 @@ MANUAL_SUGGESTIONS = [
     {"title": "See You Again - Wiz Khalifa", "vidid": "RgKAFK5djSk"},
     {"title": "Kesariya - Brahmastra", "vidid": "BddP6PYo2gs"},
     {"title": "Despacito - Luis Fonsi", "vidid": "kJQP7kiw5Fk"},
-    {"title": "Raataan Lambiyan - Shershaah", "vidid": "gvyUuxSY41Q"},
+    {"title": "Raataan Lambiyan - Shershaah", "vidid": "gvyUuxdRdR4"},
     {"title": "Faded - Alan Walker", "vidid": "60ItHLz5WEA"},
-    {"title": "Apna Bana Le - Bhediya", "vidid": "u8wS1fC6b2M"},
+    {"title": "Apna Bana Le - Bhediya", "vidid": "ElZfdU54Cp8"},
     {"title": "Believer - Imagine Dragons", "vidid": "7wtfhZwyrcc"},
     {"title": "Jai Ho - Slumdog Millionaire", "vidid": "xwwAVRyNmgQ"},
     {"title": "Perfect - Ed Sheeran", "vidid": "2Vv-BfVoq4g"},
@@ -56,11 +56,11 @@ MANUAL_SUGGESTIONS = [
     {"title": "Let Me Love You - DJ Snake", "vidid": "euCqAq6BRa4"},
     {"title": "Kabira - Yeh Jawaani Hai Deewani", "vidid": "jHNNMj5bNQw"},
     {"title": "Closer - The Chainsmokers", "vidid": "PT2_F-1esPk"},
-    {"title": "Agar Tum Saath Ho - Tamasha", "vidid": "xRb8hqwN5F8"},
+    {"title": "Agar Tum Saath Ho - Tamasha", "vidid": "xRb8hxwN5zc"},
     {"title": "Senorita - Shawn Mendes", "vidid": "Pkh8UtuejGw"},
-    {"title": "Gerua - Dilwale", "vidid": "pRCQBNLSCtU"},
+    {"title": "Gerua - Dilwale", "vidid": "AEIVhBS6baE"},
     {"title": "Chaleya - Jawan", "vidid": "VAdGW7QDJiU"},
-    {"title": "Vaaste - Dhvani Bhanushali", "vidid": "Bznxx12Ptl0"},
+    {"title": "Vaaste - Dhvani Bhanushali", "vidid": "BBAyRBTfsOU"},
 ]
 # -----------------------------------------------------------
 
