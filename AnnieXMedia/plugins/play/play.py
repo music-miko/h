@@ -12,7 +12,7 @@ from pyrogram.types import InlineKeyboardMarkup, InputMediaPhoto, Message
 from pytgcalls.exceptions import NoActiveGroupCall
 
 import config
-from config import AYU, BANNED_USERS, lyrical
+from config import BANNED_USERS, lyrical  # Removed AYU
 from AnnieXMedia import Apple, Resso, SoundCloud, Spotify, Telegram, YouTube, app
 from AnnieXMedia.core.call import StreamController
 from AnnieXMedia.utils import seconds_to_min, time_to_seconds
@@ -175,17 +175,17 @@ async def play_command(
 
     try:
         mystic = await message.reply_text(
-            _["play_2"].format(channel) if channel else random.choice(AYU)
+            _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
         )
     except FloodWait as e:
         await asyncio.sleep(e.value)
         mystic = await message.reply_text(
-            _["play_2"].format(channel) if channel else random.choice(AYU)
+            _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
         )
     except RandomIdDuplicate:
         mystic = await app.send_message(
             message.chat.id,
-            _["play_2"].format(channel) if channel else random.choice(AYU),
+            _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**",
         )
 
     plist_id, plist_type, spotify, slider = None, None, None, None
@@ -673,17 +673,17 @@ async def play_music(client, CallbackQuery, _):
 
         try:
             mystic = await CallbackQuery.message.reply_text(
-                _["play_2"].format(channel) if channel else random.choice(AYU)
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
             )
         except FloodWait as e:
             await asyncio.sleep(e.value)
             mystic = await CallbackQuery.message.reply_text(
-                _["play_2"].format(channel) if channel else random.choice(AYU)
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
             )
         except RandomIdDuplicate:
             mystic = await app.send_message(
                 CallbackQuery.message.chat.id,
-                _["play_2"].format(channel) if channel else random.choice(AYU),
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**",
             )
 
         details, track_id = await YouTube.track(vidid, videoid=vidid)
@@ -767,17 +767,17 @@ async def play_playlists_command(client, CallbackQuery, _):
 
         try:
             mystic = await CallbackQuery.message.reply_text(
-                _["play_2"].format(channel) if channel else random.choice(AYU)
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
             )
         except FloodWait as e:
             await asyncio.sleep(e.value)
             mystic = await CallbackQuery.message.reply_text(
-                _["play_2"].format(channel) if channel else random.choice(AYU)
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**"
             )
         except RandomIdDuplicate:
             mystic = await app.send_message(
                 CallbackQuery.message.chat.id,
-                _["play_2"].format(channel) if channel else random.choice(AYU),
+                _["play_2"].format(channel) if channel else "🔄 **Processing your request... Please wait.**",
             )
 
         videoid = lyrical.get(videoid)
@@ -888,19 +888,17 @@ async def suggestion_handler(client, CallbackQuery, _):
     try:
         # Data format: suggestion|vidid
         callback_data = CallbackQuery.data.strip()
-        vidid = callback_data.split("|")[1]
+        vidid = callback_data.split("|")[1] 
     except Exception:
         return await CallbackQuery.answer("Error parsing button", show_alert=True)
 
-    await CallbackQuery.answer("Processing Suggestion...")
+    await CallbackQuery.answer("Processing Suggestion...", show_alert=False)
     
-    # Simulate a user play command for the suggested song
     chat_id = CallbackQuery.message.chat.id
     user_id = CallbackQuery.from_user.id
     user_name = CallbackQuery.from_user.first_name
     
     try:
-        # Delete the suggestion message to clean up
         await CallbackQuery.message.delete()
     except:
         pass
@@ -908,13 +906,17 @@ async def suggestion_handler(client, CallbackQuery, _):
     try:
         mystic = await app.send_message(
             chat_id,
-            _["play_2"].format("Suggest") # Using a placeholder channel name
+            "🔄 **Processing your request... Please wait.**"
         )
+    except Exception:
+        # Fallback if sending failed for some reason
+        mystic = await app.send_message(chat_id, "🔄 **Processing...**")
+
+    try:
+        # Use robust URL construction
+        url = f"https://www.youtube.com/watch?v={vidid}"
+        details, track_id = await YouTube.track(url, videoid=vidid)
         
-        # Fetch details for the song
-        details, track_id = await YouTube.track(vidid, videoid=vidid)
-        
-        # Reuse the stream logic
         await stream(
             _,
             mystic,
@@ -927,8 +929,10 @@ async def suggestion_handler(client, CallbackQuery, _):
             streamtype="youtube",
             forceplay=False,
         )
+    except ValueError:
+        await mystic.edit_text("😕 **Unable to play this song.**\nIt may be region-restricted or unavailable. Please try another.")
     except Exception as e:
         if "mystic" in locals():
-            await mystic.edit_text(f"Failed to play suggestion: {e}")
+            await mystic.edit_text(f"❌ **Error:** {e}")
         else:
-            await app.send_message(chat_id, f"Failed to play suggestion: {e}")
+            await app.send_message(chat_id, f"❌ **Error:** {e}")
