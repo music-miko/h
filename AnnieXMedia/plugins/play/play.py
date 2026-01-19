@@ -913,6 +913,8 @@ async def suggestion_handler(client, CallbackQuery, _):
         # Fallback if sending failed for some reason
         mystic = await app.send_message(chat_id, "🔄 **Processing...**")
 
+    await asyncio.sleep(1)
+
     try:
         # Use robust URL construction
         url = f"https://www.youtube.com/watch?v={vidid}"
