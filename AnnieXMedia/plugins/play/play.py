@@ -164,14 +164,27 @@ async def play_command(
     url,
     fplay,
 ):
-    # --- SPAM CHECK INTEGRATION ---
     user_id = message.from_user.id
     query_text = message.text or ""
     
+    # --- ADULT CONTENT FILTER (NEW) ---
+    # List of restricted keywords
+    banned_keywords = ["xxx", "sex", "porn", "milf", "boobs", "hentai", "nude", "erotic", "brazzers", "pornhub"]
+    
+    # Check if any banned word is in the query (case-insensitive)
+    if any(word in query_text.lower() for word in banned_keywords):
+        return await message.reply_text(
+            "🔞 **Explicit Content Detected**\n\n"
+            "I cannot play this track because your request contains restricted adult terms.\n\n"
+            "**Policy:** Pornography and explicit content are strictly prohibited on this bot."
+        )
+    # ----------------------------------
+
+    # --- SPAM CHECK ---
     is_spam, spam_msg = await check_spam_status(user_id, query_text)
     if is_spam:
         return await message.reply_text(spam_msg, disable_web_page_preview=True)
-    # -----------------------------
+    # ------------------
 
     try:
         mystic = await message.reply_text(
