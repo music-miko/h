@@ -132,14 +132,18 @@ class Call:
     async def stop_stream(self, chat_id: int) -> None:
         assistant = await group_assistant(self, chat_id)
         await _clear_(chat_id)
+        
+        # FIX: Check active_calls before attempting to leave to prevent redundant calls
         if chat_id not in self.active_calls:
             return
+            
+        # FIX: Remove from active_calls BEFORE leaving to avoid race conditions with updates
+        self.active_calls.discard(chat_id)
+        
         try:
             await assistant.leave_call(chat_id)
         except Exception:
             pass
-        finally:
-            self.active_calls.discard(chat_id)
 
     @capture_internal_err
     async def force_stop_stream(self, chat_id: int) -> None:
@@ -153,14 +157,16 @@ class Call:
         await remove_active_video_chat(chat_id)
         await remove_active_chat(chat_id)
         await _clear_(chat_id)
+        
         if chat_id not in self.active_calls:
             return
+            
+        self.active_calls.discard(chat_id)
+        
         try:
             await assistant.leave_call(chat_id)
         except Exception:
             pass
-        finally:
-            self.active_calls.discard(chat_id)
 
     @capture_internal_err
     async def skip_stream(self, chat_id: int, link: str, video: Union[bool, str] = None, image: Union[bool, str] = None) -> None:
@@ -253,7 +259,6 @@ class Call:
         try:
             await assistant.play(chat_id, stream)
         
-        # --- IMPROVED PROFESSIONAL ERROR HANDLING ---
         except ChatAdminRequired:
             raise AssistantErr(
                 "🚫 **Permission Denied**\n\n"
@@ -337,7 +342,6 @@ class Call:
                         )
 
                         # 4. Generate Buttons
-                        # Randomly select 3 unique songs for buttons
                         random_choices = random.sample(results, 3)
                         buttons = []
                         for track in random_choices:
@@ -361,25 +365,32 @@ class Call:
 
                 # 6. Standard Cleanup
                 await _clear_(chat_id)
-                if chat_id in self.active_calls:
-                    try:
-                        await client.leave_call(chat_id)
-                    except NoActiveGroupCall:
-                        pass
-                    except Exception:
-                        pass
-                    finally:
-                        self.active_calls.discard(chat_id)
+                
+                # --- CRITICAL FIX: RACE CONDITION ---
+                # Remove from active_calls BEFORE leaving. 
+                # This prevents unified_update_handler from re-triggering stop_stream
+                # and causing a double-leave which hangs the bot.
+                self.active_calls.discard(chat_id)
+                
+                try:
+                    await client.leave_call(chat_id)
+                except NoActiveGroupCall:
+                    pass
+                except Exception:
+                    pass
+                
                 return
             # --- SUGGESTION SYSTEM END ---
 
         except:
             try:
                 await _clear_(chat_id)
+                self.active_calls.discard(chat_id) # Ensure this is discarded even on error
                 return await client.leave_call(chat_id)
             except:
                 return
         else:
+            # ... (Rest of the standard playback logic remains identical) ...
             queued = check[0]["file"]
             language = await get_lang(chat_id)
             _ = get_string(language)
@@ -590,6 +601,10 @@ class Call:
         async def unified_update_handler(client, update: Update) -> None:
             if isinstance(update, StreamEnded):
                 if update.stream_type == StreamEnded.Type.AUDIO:
+                    # FIX: Ignore StreamEnded if queue is already empty to prevent loops
+                    if update.chat_id not in db or not db[update.chat_id]:
+                        return
+                        
                     assistant = await group_assistant(self, update.chat_id)
                     await self.play(assistant, update.chat_id)
             
