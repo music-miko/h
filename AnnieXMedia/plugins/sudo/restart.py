@@ -83,7 +83,7 @@ async def auto_restart_job():
             now = datetime.now(IST)
             
             # Set target to 6:30 AM IST today
-            target = now.replace(hour=6, minute=30, second=0, microsecond=0)
+            target = now.replace(hour=5, minute=15, second=0, microsecond=0)
             
             # If 6:30 AM has already passed today, schedule for tomorrow
             if target <= now:
