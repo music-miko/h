@@ -1,8 +1,8 @@
-﻿# Authored By Certified Coders © 2025
+# Authored By Certified Coders © 2025
 from pyrogram import filters
 from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import BANNED_USERS, OWNER_ID
+from config import BANNED_USERS, OWNER_ID, STATS_IMG_URL
 from AnnieXMedia import app
 from AnnieXMedia.misc import SUDOERS
 from AnnieXMedia.utils.database import add_sudo, remove_sudo
@@ -18,15 +18,18 @@ async def add_sudo_user(client, message: Message, _):
         return await message.reply_text(_["general_1"])
 
     user = await extract_user(message)
+    if not user:
+        return await message.reply_text(_["general_1"])
+
     if user.id in SUDOERS:
         return await message.reply_text(_["sudo_1"].format(user.mention))
 
     if await add_sudo(user.id):
-        if user.id not in SUDOERS:
-            SUDOERS.add(user.id)
+        SUDOERS.add(user.id)
         return await message.reply_text(_["sudo_2"].format(user.mention))
 
     await message.reply_text(_["sudo_8"])
+
 
 # ─── Remove Sudo ───────────────────────────────────────────
 
@@ -37,15 +40,18 @@ async def remove_sudo_user(client, message: Message, _):
         return await message.reply_text(_["general_1"])
 
     user = await extract_user(message)
+    if not user:
+        return await message.reply_text(_["general_1"])
+
     if user.id not in SUDOERS:
         return await message.reply_text(_["sudo_3"].format(user.mention))
 
     if await remove_sudo(user.id):
-        if user.id in SUDOERS:
-            SUDOERS.remove(user.id)
+        SUDOERS.discard(user.id)
         return await message.reply_text(_["sudo_4"].format(user.mention))
 
     await message.reply_text(_["sudo_8"])
+
 
 # ─── Sudo List Entry ───────────────────────────────────────
 
@@ -54,41 +60,63 @@ async def sudoers_list(client, message: Message):
     keyboard = [[InlineKeyboardButton("๏ ᴠɪᴇᴡ sᴜᴅᴏʟɪsᴛ ๏", callback_data="sudo_list_view")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await message.reply_text(
-        text="**» ᴄʜᴇᴄᴋ sᴜᴅᴏ ʟɪsᴛ ʙʏ ɢɪᴠᴇɴ ʙᴇʟᴏᴡ ʙᴜᴛᴛᴏɴ.**\n\n**» ɴᴏᴛᴇ:**  ᴏɴʟʏ sᴜᴅᴏ ᴜsᴇʀs ᴄᴀɴ ᴠɪᴇᴡ.",
+    # Changed to reply_photo to support edit_caption in callback
+    await message.reply_photo(
+        photo=STATS_IMG_URL,
+        caption=(
+            "**🛠️ Sudo Users Management**\n\n"
+            "Tap the button below to view the list of authorized sudo users.\n"
+            "**🔒 Note:** Restricted to Owner & Sudoers only."
+        ),
         reply_markup=reply_markup
     )
+
 
 # ─── Callback: View Sudo List ──────────────────────────────
 
 @app.on_callback_query(filters.regex("^sudo_list_view$"))
 async def view_sudo_list_callback(client, callback_query: CallbackQuery):
     if callback_query.from_user.id not in SUDOERS:
-        return await callback_query.answer("ᴏɴʟʏ sᴜᴅᴏᴇʀs ᴀɴᴅ ᴏᴡɴᴇʀ ᴄᴀɴ ᴀᴄᴄᴇss ᴛʜɪs", show_alert=True)
+        return await callback_query.answer("🔒 Access Denied: Sudoers Only.", show_alert=True)
 
-    owner = await app.get_users(OWNER_ID)
-    caption = f"**˹ʟɪsᴛ ᴏғ ʙᴏᴛ ᴍᴏᴅᴇʀᴀᴛᴏʀs˼**\n\n**🌹Oᴡɴᴇʀ** ➥ {owner.mention}\n\n"
+    try:
+        owner = await app.get_users(OWNER_ID)
+        owner_mention = owner.mention if owner else f"Unknown ({OWNER_ID})"
+    except:
+        owner_mention = f"Unknown ({OWNER_ID})"
+
+    caption = (
+        "**👑 ʙᴏᴛ ᴀᴅᴍɪɴɪsᴛʀᴀᴛɪᴏɴ**\n\n"
+        f"**🤴 Oᴡɴᴇʀ:** {owner_mention}\n\n"
+        "**👮‍♂️ Sᴜᴅᴏ Usᴇʀs:**\n"
+    )
+
     keyboard = [[InlineKeyboardButton("๏ ᴠɪᴇᴡ ᴏᴡɴᴇʀ ๏", url=f"tg://openmessage?user_id={OWNER_ID}")]]
-
-    count = 0
-    for user_id in SUDOERS:
-        if user_id == OWNER_ID:
-            continue
+    
+    # Batch fetch for performance
+    sudo_ids = [uid for uid in SUDOERS if uid != OWNER_ID]
+    
+    if sudo_ids:
+        count = 0
         try:
-            user = await app.get_users(user_id)
-            count += 1
-            caption += f"**🎁 Sᴜᴅᴏ {count} »** {user.mention}\n"
-            keyboard.append([
-                InlineKeyboardButton(f"๏ ᴠɪᴇᴡ sᴜᴅᴏ {count} ๏", url=f"tg://openmessage?user_id={user_id}")
-            ])
+            # Fetch all users at once to avoid API floods
+            users = await app.get_users(sudo_ids)
+            for user in users:
+                count += 1
+                caption += f"**{count}.** {user.mention}\n"
+                keyboard.append([
+                    InlineKeyboardButton(f"๏ ᴠɪᴇᴡ sᴜᴅᴏ {count} ๏", url=f"tg://openmessage?user_id={user.id}")
+                ])
         except Exception:
-            continue
-
-    if count == 0:
-        caption += "_No additional sudoers yet._"
+            # Fallback for deleted accounts
+            caption += "<i>Error fetching specific user details.</i>"
+    else:
+        caption += "<i>No additional sudo users.</i>"
 
     keyboard.append([InlineKeyboardButton("๏ ʙᴀᴄᴋ ๏", callback_data="sudo_list_back")])
-    await callback_query.message.edit_caption(caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    await callback_query.edit_message_caption(caption=caption, reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 # ─── Callback: Back to List Menu ────────────────────────────
 
@@ -96,10 +124,16 @@ async def view_sudo_list_callback(client, callback_query: CallbackQuery):
 async def back_to_sudo_list_menu(client, callback_query: CallbackQuery):
     keyboard = [[InlineKeyboardButton("๏ ᴠɪᴇᴡ sᴜᴅᴏʟɪsᴛ ๏", callback_data="sudo_list_view")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await callback_query.message.edit_caption(
-        caption="**» ᴄʜᴇᴄᴋ sᴜᴅᴏ ʟɪsᴛ ʙʏ ɢɪᴠᴇɴ ʙᴇʟᴏᴡ ʙᴜᴛᴛᴏɴ.**\n\n**» ɴᴏᴛᴇ:**  ᴏɴʟʏ sᴜᴅᴏ ᴜsᴇʀs ᴄᴀɴ ᴠɪᴇᴡ.",
+    
+    await callback_query.edit_message_caption(
+        caption=(
+            "**🛠️ Sudo Users Management**\n\n"
+            "Tap the button below to view the list of authorized sudo users.\n"
+            "**🔒 Note:** Restricted to Owner & Sudoers only."
+        ),
         reply_markup=reply_markup
     )
+
 
 # ─── Delete All Sudo ───────────────────────────────────────
 
@@ -107,10 +141,11 @@ async def back_to_sudo_list_menu(client, callback_query: CallbackQuery):
 @language
 async def remove_all_sudo_users(client, message: Message, _):
     removed_count = 0
+    # Create a copy of the list to iterate safely while modifying
     for user_id in list(SUDOERS):
         if user_id != OWNER_ID:
             if await remove_sudo(user_id):
-                if user_id in SUDOERS:
-                    SUDOERS.remove(user_id)
+                SUDOERS.discard(user_id)
                 removed_count += 1
-    await message.reply_text(f"Removed {removed_count} users from the sudo list.")
+    
+    await message.reply_text(f"✅ **Success:** Removed {removed_count} users from the sudo list.")
