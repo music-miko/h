@@ -109,8 +109,8 @@ async def auto_leave():
 async def auto_end():
     """Automatically ends streams if no one is listening, checking every 5 minutes."""
     while True:
-        # Check every 5 minutes (300 seconds)
-        await asyncio.sleep(300)
+        # Check every 300 seconds
+        await asyncio.sleep(60)
         
         try:
             ender = await is_autoend()
