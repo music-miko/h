@@ -88,9 +88,16 @@ async def auto_leave():
             await asyncio.sleep(seconds_to_sleep)
 
             logger.info("Running cleanup of inactive chats...")
+            
+            # REPAIR: Added separate try-except for each assistant
+            # This ensures if Assistant 1 crashes, Assistant 2 still cleans up.
             for num in assistants:
-                client = await get_client(num)
-                await leave_inactive_chats(client, num)
+                try:
+                    client = await get_client(num)
+                    if client:
+                        await leave_inactive_chats(client, num)
+                except Exception as ex:
+                    logger.error(f"Failed to run auto-leave for Assistant {num}: {ex}")
             
             logger.info("Cleanup complete. Sleeping again until next schedule.")
             
@@ -110,19 +117,22 @@ async def auto_end():
             if not ender:
                 continue
 
-            # CRITICAL FIX: Iterate over list(autoend) to avoid RuntimeError
-            # because the dictionary size changes during iteration.
+            # Iterate over list(autoend) to avoid RuntimeError
             for chat_id in list(autoend):
                 timer = autoend.get(chat_id)
                 if not timer:
+                    # REPAIR: Clean up empty entries
+                    autoend.pop(chat_id, None)
                     continue
                 
                 if datetime.now() > timer:
                     if not await is_active_chat(chat_id):
-                        autoend[chat_id] = {}
+                        # REPAIR: Use .pop() instead of setting to {}
+                        autoend.pop(chat_id, None)
                         continue
                     
-                    autoend[chat_id] = {}
+                    # REPAIR: Use .pop() to correctly remove from tracking
+                    autoend.pop(chat_id, None)
                     
                     try:
                         await StreamController.stop_stream(chat_id)
