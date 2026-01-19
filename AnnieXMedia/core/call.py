@@ -4,6 +4,7 @@
 import asyncio
 import os
 import random
+import time
 from datetime import datetime, timedelta
 from typing import Union, List, Dict
 
@@ -133,11 +134,9 @@ class Call:
         assistant = await group_assistant(self, chat_id)
         await _clear_(chat_id)
         
-        # FIX: Check active_calls before attempting to leave to prevent redundant calls
         if chat_id not in self.active_calls:
             return
             
-        # FIX: Remove from active_calls BEFORE leaving to avoid race conditions with updates
         self.active_calls.discard(chat_id)
         
         try:
@@ -328,31 +327,25 @@ class Call:
             # --- SUGGESTION SYSTEM START ---
             if not check:
                 try:
-                    # 1. Log Queue End
                     LOGGER(__name__).info(f"Playback queue depleted for Chat ID: {chat_id}. Generating suggestions...")
-
-                    # 2. Use manual list
                     results = MANUAL_SUGGESTIONS
                     
                     if results:
-                        # 3. Build Professional Message
                         text_list = (
                             "💤 Zzz… no tracks left, wake me up with a new one!\n"
                             "👇 Tap a button below to play a recommended track!"
                         )
 
-                        # 4. Generate Buttons
-                        random_choices = random.sample(results, 3)
+                        random_choices = random.sample(results, 5)
                         buttons = []
                         for track in random_choices:
                             buttons.append([
                                 InlineKeyboardButton(
-                                    text=f"{track['title'][:25]}...", 
+                                    text=f"{track['title'][:25]}", 
                                     callback_data=f"suggestion|{track['vidid']}"
                                 )
                             ])
                         
-                        # 5. Send Message & Log
                         await app.send_message(
                             popped["chat_id"],
                             text=text_list,
@@ -363,13 +356,7 @@ class Call:
                 except Exception as e:
                     LOGGER(__name__).error(f"Failed to send suggestions for {chat_id}: {e}")
 
-                # 6. Standard Cleanup
                 await _clear_(chat_id)
-                
-                # --- CRITICAL FIX: RACE CONDITION ---
-                # Remove from active_calls BEFORE leaving. 
-                # This prevents unified_update_handler from re-triggering stop_stream
-                # and causing a double-leave which hangs the bot.
                 self.active_calls.discard(chat_id)
                 
                 try:
@@ -385,12 +372,11 @@ class Call:
         except:
             try:
                 await _clear_(chat_id)
-                self.active_calls.discard(chat_id) # Ensure this is discarded even on error
+                self.active_calls.discard(chat_id)
                 return await client.leave_call(chat_id)
             except:
                 return
         else:
-            # ... (Rest of the standard playback logic remains identical) ...
             queued = check[0]["file"]
             language = await get_lang(chat_id)
             _ = get_string(language)
@@ -399,10 +385,16 @@ class Call:
             original_chat_id = check[0]["chat_id"]
             streamtype = check[0]["streamtype"]
             videoid = check[0]["vidid"]
-            db[chat_id][0]["played"] = 0
+            
+            # --- SAFE DATABASE UPDATE ---
+            if chat_id in db and db[chat_id]:
+                db[chat_id][0]["played"] = 0
+            else:
+                # Queue was cleared unexpectedly, stop here to avoid crash
+                return
 
             exis = (check[0]).get("old_dur")
-            if exis:
+            if exis and chat_id in db and db[chat_id]:
                 db[chat_id][0]["dur"] = exis
                 db[chat_id][0]["seconds"] = check[0]["old_second"]
                 db[chat_id][0]["speed_path"] = None
@@ -434,8 +426,16 @@ class Call:
                     ),
                     reply_markup=InlineKeyboardMarkup(button),
                 )
-                db[chat_id][0]["mystic"] = run
-                db[chat_id][0]["markup"] = "tg"
+                
+                # --- SAFE DB UPDATE FOR MYSTIC ---
+                if chat_id in db and db[chat_id]:
+                    db[chat_id][0]["mystic"] = run
+                    db[chat_id][0]["markup"] = "tg"
+                else:
+                    try:
+                        await run.delete()
+                    except:
+                        pass
 
             elif "vid_" in queued:
                 mystic = await app.send_message(original_chat_id, _["call_7"])
@@ -471,8 +471,16 @@ class Call:
                     ),
                     reply_markup=InlineKeyboardMarkup(button),
                 )
-                db[chat_id][0]["mystic"] = run
-                db[chat_id][0]["markup"] = "stream"
+                
+                # --- SAFE DB UPDATE FOR MYSTIC ---
+                if chat_id in db and db[chat_id]:
+                    db[chat_id][0]["mystic"] = run
+                    db[chat_id][0]["markup"] = "stream"
+                else:
+                    try:
+                        await run.delete()
+                    except:
+                        pass
 
             elif "index_" in queued:
                 stream = dynamic_media_stream(path=videoid, video=video)
@@ -488,8 +496,16 @@ class Call:
                     caption=_["stream_2"].format(user),
                     reply_markup=InlineKeyboardMarkup(button),
                 )
-                db[chat_id][0]["mystic"] = run
-                db[chat_id][0]["markup"] = "tg"
+                
+                # --- SAFE DB UPDATE FOR MYSTIC ---
+                if chat_id in db and db[chat_id]:
+                    db[chat_id][0]["mystic"] = run
+                    db[chat_id][0]["markup"] = "tg"
+                else:
+                    try:
+                        await run.delete()
+                    except:
+                        pass
 
             else:
                 stream = dynamic_media_stream(path=queued, video=video)
@@ -512,8 +528,16 @@ class Call:
                         ),
                         reply_markup=InlineKeyboardMarkup(button),
                     )
-                    db[chat_id][0]["mystic"] = run
-                    db[chat_id][0]["markup"] = "tg"
+                    
+                    # --- SAFE DB UPDATE FOR MYSTIC ---
+                    if chat_id in db and db[chat_id]:
+                        db[chat_id][0]["mystic"] = run
+                        db[chat_id][0]["markup"] = "tg"
+                    else:
+                        try:
+                            await run.delete()
+                        except:
+                            pass
 
                 elif videoid == "soundcloud":
                     button = stream_markup(_, chat_id)
@@ -525,8 +549,16 @@ class Call:
                         ),
                         reply_markup=InlineKeyboardMarkup(button),
                     )
-                    db[chat_id][0]["mystic"] = run
-                    db[chat_id][0]["markup"] = "tg"
+                    
+                    # --- SAFE DB UPDATE FOR MYSTIC ---
+                    if chat_id in db and db[chat_id]:
+                        db[chat_id][0]["mystic"] = run
+                        db[chat_id][0]["markup"] = "tg"
+                    else:
+                        try:
+                            await run.delete()
+                        except:
+                            pass
 
                 else:
                     img = await get_thumb(videoid)
@@ -557,8 +589,16 @@ class Call:
                             ),
                             reply_markup=InlineKeyboardMarkup(button),
                         )
-                    db[chat_id][0]["mystic"] = run
-                    db[chat_id][0]["markup"] = "stream"
+                    
+                    # --- SAFE DB UPDATE FOR MYSTIC ---
+                    if chat_id in db and db[chat_id]:
+                        db[chat_id][0]["mystic"] = run
+                        db[chat_id][0]["markup"] = "stream"
+                    else:
+                        try:
+                            await run.delete()
+                        except:
+                            pass
 
     async def start(self) -> None:
         LOGGER(__name__).info("🚀 Starting PyTgCalls Clients...")
@@ -601,7 +641,6 @@ class Call:
         async def unified_update_handler(client, update: Update) -> None:
             if isinstance(update, StreamEnded):
                 if update.stream_type == StreamEnded.Type.AUDIO:
-                    # FIX: Ignore StreamEnded if queue is already empty to prevent loops
                     if update.chat_id not in db or not db[update.chat_id]:
                         return
                         
