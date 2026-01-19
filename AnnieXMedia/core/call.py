@@ -347,7 +347,7 @@ class Call:
                         for track in random_choices:
                             buttons.append([
                                 InlineKeyboardButton(
-                                    text=f"▶️ {track['title'][:25]}...", 
+                                    text=f"{track['title'][:25]}...", 
                                     callback_data=f"suggestion|{track['vidid']}"
                                 )
                             ])
