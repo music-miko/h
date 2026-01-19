@@ -27,7 +27,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- CONFIGURATION ---
 # Define IST Timezone (UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=30))
-SUPPORT_CHAT_ID = -1003043405529
+SUPPORT_CHAT_ID = -1002144355688    #-1003043405529
 # ---------------------
 
 async def is_heroku():
