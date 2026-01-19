@@ -133,12 +133,10 @@ class Call:
     async def stop_stream(self, chat_id: int) -> None:
         assistant = await group_assistant(self, chat_id)
         await _clear_(chat_id)
-        
         if chat_id not in self.active_calls:
             return
-            
-        self.active_calls.discard(chat_id)
         
+        self.active_calls.discard(chat_id)
         try:
             await assistant.leave_call(chat_id)
         except Exception:
@@ -156,12 +154,10 @@ class Call:
         await remove_active_video_chat(chat_id)
         await remove_active_chat(chat_id)
         await _clear_(chat_id)
-        
         if chat_id not in self.active_calls:
             return
-            
-        self.active_calls.discard(chat_id)
         
+        self.active_calls.discard(chat_id)
         try:
             await assistant.leave_call(chat_id)
         except Exception:
@@ -309,7 +305,7 @@ class Call:
             counter[chat_id] = {}
             users = len(await assistant.get_participants(chat_id))
             if users == 1:
-                autoend[chat_id] = datetime.now() + timedelta(minutes=1)
+                autoend[chat_id] = datetime.now() + timedelta(minutes=10)
 
     @capture_internal_err
     async def play(self, client, chat_id: int) -> None:
@@ -327,25 +323,33 @@ class Call:
             # --- SUGGESTION SYSTEM START ---
             if not check:
                 try:
+                    # 1. Log Queue End
                     LOGGER(__name__).info(f"Playback queue depleted for Chat ID: {chat_id}. Generating suggestions...")
+
+                    # 2. Use manual list
                     results = MANUAL_SUGGESTIONS
                     
                     if results:
+                        # 3. Build Professional Message
                         text_list = (
                             "💤 Zzz… no tracks left, wake me up with a new one!\n"
                             "👇 Tap a button below to play a recommended track!"
                         )
 
-                        random_choices = random.sample(results, 5)
+                        # 4. Generate Buttons
+                        random_choices = random.sample(results, 3)
                         buttons = []
+                        # --- ADD TIMESTAMP FOR EXPIRY (10 MINUTES) ---
+                        timestamp = int(time.time())
                         for track in random_choices:
                             buttons.append([
                                 InlineKeyboardButton(
-                                    text=f"{track['title'][:25]}", 
-                                    callback_data=f"suggestion|{track['vidid']}"
+                                    text=f"▶️ {track['title'][:25]}...", 
+                                    callback_data=f"suggestion|{track['vidid']}|{timestamp}"
                                 )
                             ])
                         
+                        # 5. Send Message & Log
                         await app.send_message(
                             popped["chat_id"],
                             text=text_list,
@@ -356,6 +360,7 @@ class Call:
                 except Exception as e:
                     LOGGER(__name__).error(f"Failed to send suggestions for {chat_id}: {e}")
 
+                # 6. Standard Cleanup
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
                 
@@ -386,14 +391,13 @@ class Call:
             streamtype = check[0]["streamtype"]
             videoid = check[0]["vidid"]
             
-            # --- CRASH PROTECTION 1: Played Status ---
             try:
                 db[chat_id][0]["played"] = 0
             except:
                 pass
 
             exis = (check[0]).get("old_dur")
-            if exis:
+            if exis and chat_id in db and db[chat_id]:
                 try:
                     db[chat_id][0]["dur"] = exis
                     db[chat_id][0]["seconds"] = check[0]["old_second"]
@@ -429,7 +433,6 @@ class Call:
                     reply_markup=InlineKeyboardMarkup(button),
                 )
                 
-                # --- CRASH PROTECTION 2: Mystic & Markup ---
                 try:
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "tg"
@@ -471,7 +474,6 @@ class Call:
                     reply_markup=InlineKeyboardMarkup(button),
                 )
                 
-                # --- CRASH PROTECTION 3: Mystic & Markup ---
                 try:
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "stream"
@@ -493,7 +495,6 @@ class Call:
                     reply_markup=InlineKeyboardMarkup(button),
                 )
                 
-                # --- CRASH PROTECTION 4: Mystic & Markup ---
                 try:
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "tg"
@@ -522,7 +523,6 @@ class Call:
                         reply_markup=InlineKeyboardMarkup(button),
                     )
                     
-                    # --- CRASH PROTECTION 5: Mystic & Markup ---
                     try:
                         db[chat_id][0]["mystic"] = run
                         db[chat_id][0]["markup"] = "tg"
@@ -540,7 +540,6 @@ class Call:
                         reply_markup=InlineKeyboardMarkup(button),
                     )
                     
-                    # --- CRASH PROTECTION 6: Mystic & Markup ---
                     try:
                         db[chat_id][0]["mystic"] = run
                         db[chat_id][0]["markup"] = "tg"
@@ -577,7 +576,6 @@ class Call:
                             reply_markup=InlineKeyboardMarkup(button),
                         )
                     
-                    # --- CRASH PROTECTION 7: Mystic & Markup ---
                     try:
                         db[chat_id][0]["mystic"] = run
                         db[chat_id][0]["markup"] = "stream"
