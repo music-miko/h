@@ -167,9 +167,9 @@ async def play_command(
     user_id = message.from_user.id
     query_text = message.text or ""
     
-    # --- ADULT CONTENT FILTER (NEW) ---
+    # --- ADULT CONTENT FILTER ---
     # List of restricted keywords
-    banned_keywords = ["xxx", "sex", "porn", "milf", "boobs", "hentai", "nude", "erotic", "brazzers", "pornhub"]
+    banned_keywords = ["xxx", "sex", "porn", "milf", "boobs", "hentai", "nude", "erotic", "brazzers"]
     
     # Check if any banned word is in the query (case-insensitive)
     if any(word in query_text.lower() for word in banned_keywords):
@@ -178,7 +178,7 @@ async def play_command(
             "I cannot play this track because your request contains restricted adult terms.\n\n"
             "**Policy:** Pornography and explicit content are strictly prohibited on this bot."
         )
-    # ----------------------------------
+    # ----------------------------
 
     # --- SPAM CHECK ---
     is_spam, spam_msg = await check_spam_status(user_id, query_text)
@@ -899,11 +899,29 @@ async def slider_queries(client, CallbackQuery, _):
 @capture_callback_err
 async def suggestion_handler(client, CallbackQuery, _):
     try:
-        # Data format: suggestion|vidid
-        callback_data = CallbackQuery.data.strip()
-        vidid = callback_data.split("|")[1] 
+        # Data format: suggestion|vidid|timestamp
+        parts = CallbackQuery.data.strip().split("|")
+        vidid = parts[1]
+        
+        # Extract timestamp (Default to 0 if missing for backward compatibility)
+        timestamp = int(parts[2]) if len(parts) > 2 else 0
+        
     except Exception:
         return await CallbackQuery.answer("Error parsing button", show_alert=True)
+
+    # --- EXPIRY CHECK (10 Minutes = 600 Seconds) ---
+    current_time = int(time.time())
+    
+    # If timestamp is 0 (old button) OR diff > 600s, expire it.
+    if timestamp == 0 or (current_time - timestamp) > 600:
+        await CallbackQuery.answer("Queries expired! Start stream new by /play", show_alert=True)
+        try:
+            # Clean up the expired message to reduce clutter
+            await CallbackQuery.message.delete()
+        except:
+            pass
+        return
+    # -----------------------------------------------
 
     await CallbackQuery.answer("Processing Suggestion...", show_alert=False)
     
