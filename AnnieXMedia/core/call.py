@@ -341,7 +341,7 @@ class Call:
                         for track in random_choices:
                             buttons.append([
                                 InlineKeyboardButton(
-                                    text=f"{track['title'][:25]}", 
+                                    text=f"{track['title'][:25]}...", 
                                     callback_data=f"suggestion|{track['vidid']}"
                                 )
                             ])
@@ -386,19 +386,21 @@ class Call:
             streamtype = check[0]["streamtype"]
             videoid = check[0]["vidid"]
             
-            # --- SAFE DATABASE UPDATE ---
-            if chat_id in db and db[chat_id]:
+            # --- CRASH PROTECTION 1: Played Status ---
+            try:
                 db[chat_id][0]["played"] = 0
-            else:
-                # Queue was cleared unexpectedly, stop here to avoid crash
-                return
+            except:
+                pass
 
             exis = (check[0]).get("old_dur")
-            if exis and chat_id in db and db[chat_id]:
-                db[chat_id][0]["dur"] = exis
-                db[chat_id][0]["seconds"] = check[0]["old_second"]
-                db[chat_id][0]["speed_path"] = None
-                db[chat_id][0]["speed"] = 1.0
+            if exis:
+                try:
+                    db[chat_id][0]["dur"] = exis
+                    db[chat_id][0]["seconds"] = check[0]["old_second"]
+                    db[chat_id][0]["speed_path"] = None
+                    db[chat_id][0]["speed"] = 1.0
+                except:
+                    pass
 
             video = True if str(streamtype) == "video" else False
 
@@ -427,15 +429,12 @@ class Call:
                     reply_markup=InlineKeyboardMarkup(button),
                 )
                 
-                # --- SAFE DB UPDATE FOR MYSTIC ---
-                if chat_id in db and db[chat_id]:
+                # --- CRASH PROTECTION 2: Mystic & Markup ---
+                try:
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "tg"
-                else:
-                    try:
-                        await run.delete()
-                    except:
-                        pass
+                except:
+                    pass
 
             elif "vid_" in queued:
                 mystic = await app.send_message(original_chat_id, _["call_7"])
@@ -472,15 +471,12 @@ class Call:
                     reply_markup=InlineKeyboardMarkup(button),
                 )
                 
-                # --- SAFE DB UPDATE FOR MYSTIC ---
-                if chat_id in db and db[chat_id]:
+                # --- CRASH PROTECTION 3: Mystic & Markup ---
+                try:
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "stream"
-                else:
-                    try:
-                        await run.delete()
-                    except:
-                        pass
+                except:
+                    pass
 
             elif "index_" in queued:
                 stream = dynamic_media_stream(path=videoid, video=video)
@@ -497,15 +493,12 @@ class Call:
                     reply_markup=InlineKeyboardMarkup(button),
                 )
                 
-                # --- SAFE DB UPDATE FOR MYSTIC ---
-                if chat_id in db and db[chat_id]:
+                # --- CRASH PROTECTION 4: Mystic & Markup ---
+                try:
                     db[chat_id][0]["mystic"] = run
                     db[chat_id][0]["markup"] = "tg"
-                else:
-                    try:
-                        await run.delete()
-                    except:
-                        pass
+                except:
+                    pass
 
             else:
                 stream = dynamic_media_stream(path=queued, video=video)
@@ -529,15 +522,12 @@ class Call:
                         reply_markup=InlineKeyboardMarkup(button),
                     )
                     
-                    # --- SAFE DB UPDATE FOR MYSTIC ---
-                    if chat_id in db and db[chat_id]:
+                    # --- CRASH PROTECTION 5: Mystic & Markup ---
+                    try:
                         db[chat_id][0]["mystic"] = run
                         db[chat_id][0]["markup"] = "tg"
-                    else:
-                        try:
-                            await run.delete()
-                        except:
-                            pass
+                    except:
+                        pass
 
                 elif videoid == "soundcloud":
                     button = stream_markup(_, chat_id)
@@ -550,15 +540,12 @@ class Call:
                         reply_markup=InlineKeyboardMarkup(button),
                     )
                     
-                    # --- SAFE DB UPDATE FOR MYSTIC ---
-                    if chat_id in db and db[chat_id]:
+                    # --- CRASH PROTECTION 6: Mystic & Markup ---
+                    try:
                         db[chat_id][0]["mystic"] = run
                         db[chat_id][0]["markup"] = "tg"
-                    else:
-                        try:
-                            await run.delete()
-                        except:
-                            pass
+                    except:
+                        pass
 
                 else:
                     img = await get_thumb(videoid)
@@ -590,15 +577,12 @@ class Call:
                             reply_markup=InlineKeyboardMarkup(button),
                         )
                     
-                    # --- SAFE DB UPDATE FOR MYSTIC ---
-                    if chat_id in db and db[chat_id]:
+                    # --- CRASH PROTECTION 7: Mystic & Markup ---
+                    try:
                         db[chat_id][0]["mystic"] = run
                         db[chat_id][0]["markup"] = "stream"
-                    else:
-                        try:
-                            await run.delete()
-                        except:
-                            pass
+                    except:
+                        pass
 
     async def start(self) -> None:
         LOGGER(__name__).info("🚀 Starting PyTgCalls Clients...")
