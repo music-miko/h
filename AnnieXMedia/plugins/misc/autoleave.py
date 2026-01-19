@@ -144,8 +144,8 @@ async def auto_end():
                         await app.send_message(
                             chat_id,
                             "👋 **Bot left the voice chat due to inactivity.**\n\n"
-                            "🎶 If you want to listen to music, simply use:\n"
-                            "▶️ `/play [song name]`",
+                            "❌ No one was listening for **10 minutes**.\n"
+                            "🎶 To play again: `/play [song name]`",
                         )
                     except Exception:
                         continue
