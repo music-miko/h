@@ -73,7 +73,10 @@ async def _clear_(chat_id: int) -> None:
     """
     popped = db.pop(chat_id, None)
     if popped:
-        await auto_clean(popped)
+        try:
+            await auto_clean(popped)
+        except:
+            pass
     db[chat_id] = []
     await remove_active_video_chat(chat_id)
     await remove_active_chat(chat_id)
@@ -301,11 +304,16 @@ class Call:
         if video:
             await add_active_video_chat(chat_id)
 
+        # --- UPDATED AUTOEND LOGIC (10 Minutes) ---
         if await is_autoend():
             counter[chat_id] = {}
-            users = len(await assistant.get_participants(chat_id))
-            if users == 1:
-                autoend[chat_id] = datetime.now() + timedelta(minutes=10)
+            try:
+                users = len(await assistant.get_participants(chat_id))
+                # If only 1 user (the bot itself) is present, start the 10-min timer
+                if users == 1:
+                    autoend[chat_id] = datetime.now() + timedelta(minutes=10)
+            except:
+                pass
 
     @capture_internal_err
     async def play(self, client, chat_id: int) -> None:
@@ -330,16 +338,13 @@ class Call:
                     results = MANUAL_SUGGESTIONS
                     
                     if results:
-                        # 3. Build Professional Message
                         text_list = (
                             "💤 Zzz… no tracks left, wake me up with a new one!\n"
                             "👇 Tap a button below to play a recommended track!"
                         )
 
-                        # 4. Generate Buttons
-                        random_choices = random.sample(results, 5)
+                        random_choices = random.sample(results, 3)
                         buttons = []
-                        # --- ADD TIMESTAMP FOR EXPIRY (10 MINUTES) ---
                         timestamp = int(time.time())
                         for track in random_choices:
                             buttons.append([
@@ -349,7 +354,6 @@ class Call:
                                 )
                             ])
                         
-                        # 5. Send Message & Log
                         await app.send_message(
                             popped["chat_id"],
                             text=text_list,
@@ -360,15 +364,13 @@ class Call:
                 except Exception as e:
                     LOGGER(__name__).error(f"Failed to send suggestions for {chat_id}: {e}")
 
-                # 6. Standard Cleanup
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
                 
+                # FIX: Force Leave with Timeout to prevent deadlock
                 try:
-                    await client.leave_call(chat_id)
-                except NoActiveGroupCall:
-                    pass
-                except Exception:
+                    await asyncio.wait_for(client.leave_call(chat_id), timeout=3.0)
+                except:
                     pass
                 
                 return
@@ -378,7 +380,11 @@ class Call:
             try:
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
-                return await client.leave_call(chat_id)
+                try:
+                    await asyncio.wait_for(client.leave_call(chat_id), timeout=3.0)
+                except:
+                    pass
+                return 
             except:
                 return
         else:
