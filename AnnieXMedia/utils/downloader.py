@@ -108,9 +108,9 @@ CDN_RETRY_DELAY = 2
 # Whole flow timeout: MediaDB attempt + V2 attempt
 CYCLE_TIMEOUT_SEC = 80
 
-# --- CONCURRENCY CONTROL (FIX FOR STUCK BOT) ---
-# Limit concurrent downloads to prevent CPU/IO freezing
-MAX_CONCURRENT_DOWNLOADS = 5 
+# --- CONCURRENCY CONTROL ---
+# Limit concurrent downloads to 20 for stability in 100+ VCs
+MAX_CONCURRENT_DOWNLOADS = 20
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 
@@ -137,6 +137,7 @@ class V2HardAPIError(Exception):
 
 
 def extract_video_id(link: str) -> str:
+    """Fast local string parsing."""
     if not link:
         return ""
     s = link.strip()
@@ -180,7 +181,6 @@ async def get_http_session() -> aiohttp.ClientSession:
         if _session and not _session.closed:
             return _session
         timeout = aiohttp.ClientTimeout(total=600, sock_connect=20, sock_read=60)
-        # FIX: Changed limit from 0 (unlimited) to 100 to prevent socket exhaustion
         connector = TCPConnector(limit=100, ttl_dns_cache=300, enable_cleanup_closed=True)
         _session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         return _session
@@ -264,7 +264,6 @@ def _normalize_candidate_to_url(candidate: str) -> Optional[str]:
     if c.startswith(("http://", "https://")):
         return c
     if c.startswith("/"):
-        # ignore local paths
         if c.startswith("/root") or c.startswith("/home"):
             return None
         return f"{API_URL.rstrip('/')}{c}"
@@ -377,7 +376,6 @@ async def _download_from_media_db(track_id: str, is_video: bool) -> Optional[str
             _inc("media_db_fail")
             return None
 
-        # This part downloads from Telegram servers, which can be heavy
         dl_res = await TG_APP.download_media(msg, file_name=tmp_path)
         fixed = _resolve_if_dir(dl_res) if isinstance(dl_res, str) else None
 
@@ -560,27 +558,23 @@ async def deduplicate_download(key: str, runner):
         return None
     finally:
         async with _inflight_lock:
-            # Only remove if it's the SAME future
             if _inflight.get(key) == fut:
                 _inflight.pop(key, None)
 
 
 # -----------------------
-# Public function
+# Public function (Optimized)
 # -----------------------
-async def media_download(link: str, type: str, title: str = "") -> Optional[str]:
+async def media_download(link: str, type: str, title: str = "", video_id: str = None) -> Optional[str]:
     """
-    FLOW:
-      1) Limit concurrency (Semaphore)
-      2) Try Media DB first
-      3) If not found -> try V2
-      4) Whole cycle timeout = 120s
+    Downloads media.
+    OPTIMIZATION: Accepts 'video_id' directly to skip regex re-parsing.
     """
     _inc("total")
 
-    # --- FIX: Apply Concurrency Limit ---
     async with DOWNLOAD_SEMAPHORE:
-        vid = extract_video_id(link)
+        # Use provided ID if available, otherwise parse
+        vid = video_id if video_id else extract_video_id(link)
         dedup_id = vid or link.strip()
         key = f"{type}:{dedup_id}"
 
@@ -593,10 +587,8 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
                 db_path = await _download_from_media_db(vid, is_video=is_video)
                 if db_path and os.path.exists(db_path):
                     _inc("success")
-                    if is_audio:
-                        _inc("success_audio")
-                    else:
-                        _inc("success_video")
+                    if is_audio: _inc("success_audio")
+                    else: _inc("success_video")
                     LOGGER.info(f"MEDIA_DB_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{db_path}'")
                     return db_path
 
@@ -604,18 +596,14 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
             v2_path = await v2_download(link, media_type=("video" if is_video else "audio"))
             if v2_path and os.path.exists(v2_path):
                 _inc("success")
-                if is_audio:
-                    _inc("success_audio")
-                else:
-                    _inc("success_video")
+                if is_audio: _inc("success_audio")
+                else: _inc("success_video")
                 LOGGER.info(f"V2_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{v2_path}'")
                 return v2_path
 
             _inc("failed")
-            if is_audio:
-                _inc("failed_audio")
-            else:
-                _inc("failed_video")
+            if is_audio: _inc("failed_audio")
+            else: _inc("failed_video")
             LOGGER.warning(f"DOWNLOAD_FAILED type={type} title='{title or 'Unknown'}' link='{link}' reason='not_found'")
             return None
 
@@ -625,9 +613,7 @@ async def media_download(link: str, type: str, title: str = "") -> Optional[str]
             except asyncio.TimeoutError:
                 _inc("timeout_fail")
                 _inc("failed")
-                LOGGER.warning(
-                    f"DOWNLOAD_TIMEOUT type={type} title='{title or 'Unknown'}' link='{link}' timeout={CYCLE_TIMEOUT_SEC}s"
-                )
+                LOGGER.warning(f"DOWNLOAD_TIMEOUT type={type} title='{title or 'Unknown'}' link='{link}' timeout={CYCLE_TIMEOUT_SEC}s")
                 return None
 
         return await deduplicate_download(key, run)
