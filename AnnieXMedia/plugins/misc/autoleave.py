@@ -110,8 +110,8 @@ async def auto_leave():
 async def auto_end():
     """Automatically ends streams if no one is listening, checking every 5 minutes."""
     while True:
-        # Check every 300 seconds
-        await asyncio.sleep(60)
+        # Check every 10 seconds
+        await asyncio.sleep(10)
         
         try:
             ender = await is_autoend()
@@ -145,7 +145,7 @@ async def auto_end():
                         await app.send_message(
                             chat_id,
                             "👋 **Bot left the voice chat due to inactivity.**\n\n"
-                            "❌ No one was listening for **10 minutes**.\n"
+                            "❌ No one was listening for **120 Seconds**.\n"
                             "🎶 To play again: `/play [song name]`",
                         )
                     except Exception:
