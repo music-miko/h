@@ -337,14 +337,14 @@ class Call:
                         )
 
                         # 4. Generate Buttons
-                        random_choices = random.sample(results, 3)
+                        random_choices = random.sample(results, 5)
                         buttons = []
                         # --- ADD TIMESTAMP FOR EXPIRY (10 MINUTES) ---
                         timestamp = int(time.time())
                         for track in random_choices:
                             buttons.append([
                                 InlineKeyboardButton(
-                                    text=f"▶️ {track['title'][:25]}...", 
+                                    text=f"{track['title'][:25]}", 
                                     callback_data=f"suggestion|{track['vidid']}|{timestamp}"
                                 )
                             ])
