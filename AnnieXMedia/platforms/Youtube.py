@@ -24,10 +24,9 @@ from AnnieXMedia.utils.tuning import YTDLP_TIMEOUT
 YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 CACHE_FILE = "youtube_cache.json"
 
-# === Concurrency Control (Stability for 100+ Chats) ===
-# Increased to 25 to handle high load (100+ VCs) without lagging.
+# === Concurrency Control ===
 _API_SEMAPHORE = asyncio.Semaphore(25) 
-_API_TIMEOUT = 10  # Strict timeout
+_API_TIMEOUT = 10
 VIDEO_PLAY_ALLOWED = False
 
 
@@ -52,7 +51,6 @@ def _cookies_args() -> List[str]:
 
 
 async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
-    # Force no cache directory for all subprocess calls to save Disk I/O
     cmd_args = list(args)
     if "yt-dlp" in cmd_args[0]:
         cmd_args.insert(1, "--no-cache-dir")
@@ -72,7 +70,6 @@ async def _exec_proc(*args: str) -> Tuple[bytes, bytes]:
 
 
 def _dig(data: Any, *path: Union[str, int]) -> Any:
-    """Safe nested dictionary/list accessor."""
     cur = data
     for p in path:
         if isinstance(p, str):
@@ -92,7 +89,6 @@ def _dig(data: Any, *path: Union[str, int]) -> Any:
 
 @capture_internal_err
 async def cached_youtube_search(query: str) -> List[Dict]:
-    """Stateless wrapper protected by Semaphore."""
     try:
         async with _API_SEMAPHORE:
             data = await asyncio.wait_for(
@@ -111,13 +107,10 @@ class YouTubeAPI:
         self.base_url = "https://www.youtube.com/watch?v="
         self.playlist_url = "https://youtube.com/playlist?list="
         self._url_pattern = re.compile(r"(?:youtube\.com|youtu\.be)")
-        
-        # Initialize Persistent JSON Cache (Memory-First)
         self.cache_path = CACHE_FILE
         self.cache = self._load_cache()
 
     def _load_cache(self) -> Dict[str, Any]:
-        """Loads the JSON cache from disk into memory."""
         if not os.path.exists(self.cache_path):
             return {}
         try:
@@ -127,7 +120,6 @@ class YouTubeAPI:
             return {}
 
     def _save_to_cache(self, key: str, data: Dict) -> None:
-        """Updates memory cache and saves to disk."""
         self.cache[key] = data
         try:
             with open(self.cache_path, 'w', encoding='utf-8') as f:
@@ -174,7 +166,6 @@ class YouTubeAPI:
 
     # === Internal Search Methods (Optimized) ===
     def _recursive_parse(self, node: Any, limit: int = 1) -> List[Dict]:
-        """Recursive parser for Raw InnerTube JSON."""
         tracks = []
         if isinstance(node, list):
             for item in node:
@@ -214,7 +205,6 @@ class YouTubeAPI:
         return tracks
 
     async def _raw_youtube_search(self, query: str) -> Optional[Dict]:
-        """Direct InnerTube API call. 3x Faster than libraries."""
         endpoint = "https://www.youtube.com/youtubei/v1/search?key=AIzaSyCDCG4LCrByczUR8oYZKj-43dW-JqVIPHk"
         payload = {
             "context": {
@@ -242,20 +232,17 @@ class YouTubeAPI:
         results = self._recursive_parse(root, limit=1)
         return results[0] if results else None
 
-    # === Metadata Fetching (Prioritized) ===
+    # === Metadata Fetching ===
     @capture_internal_err
     async def _fetch_video_info(self, query: str, *, use_cache: bool = True) -> Optional[Dict]:
         q = self._prepare_link(query)
         is_link = q.startswith("http")
 
-        # 1. Check RAM Cache
         if use_cache and q in self.cache:
             return self.cache[q]
 
-        # 2. Try Raw Search (Fast)
         info = await self._raw_youtube_search(q)
         
-        # 3. Fallback: yt-dlp (Slow but reliable)
         if not info:
             try:
                 search_query = q if is_link else f"ytsearch1:{q}"
@@ -280,7 +267,6 @@ class YouTubeAPI:
             except Exception:
                 pass
 
-        # 4. Save to RAM & Disk Cache
         if info:
             self._save_to_cache(q, info)
             
@@ -288,7 +274,6 @@ class YouTubeAPI:
 
     @capture_internal_err
     async def is_live(self, link: str) -> bool:
-        """Checks if a video is live using yt-dlp."""
         prepared = self._prepare_link(link)
         stdout, _ = await _exec_proc("yt-dlp", *(_cookies_args()), "--dump-json", prepared)
         if not stdout:
@@ -304,7 +289,6 @@ class YouTubeAPI:
         self, link: str, videoid: Union[str, bool, None] = None
     ) -> Tuple[str, Optional[str], int, str, str]:
         prepared_link = self._prepare_link(link, videoid)
-        
         info = await self._fetch_video_info(prepared_link)
 
         if not info:
@@ -321,7 +305,6 @@ class YouTubeAPI:
             
             raise ValueError(f"Video not found for: {prepared_link}")
 
-        # Safe Data Extraction
         title = info.get("title") or "Unknown"
         dt = info.get("duration") or "00:00"
         try:
@@ -389,7 +372,6 @@ class YouTubeAPI:
     @capture_internal_err
     async def video(self, link: str, videoid: Union[str, bool, None] = None) -> Tuple[int, str]:
         link = self._prepare_link(link, videoid)
-        # _exec_proc is protected
         stdout, stderr = await _exec_proc(
             "yt-dlp", *(_cookies_args()), "-g", "-f", "best[height<=?720][width<=?1280]", link,
         )
@@ -516,9 +498,11 @@ class YouTubeAPI:
                 return None, None
 
             title = await self.title(link)
-            p = await media_download(link, "video", title)
+            # FIX: Pass extracted 'videoid' directly to reduce load
+            p = await media_download(link, "video", title, videoid)
             return (p, True) if p else (None, None)
 
         title = await self.title(link)
-        p = await media_download(link, "audio", title)
+        # FIX: Pass extracted 'videoid' directly to reduce load
+        p = await media_download(link, "audio", title, videoid)
         return (p, True) if p else (None, None)
