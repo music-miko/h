@@ -179,7 +179,7 @@ async def run_broadcast(data, status_message=None):
                 return False
 
         # --- Batch Loop (100 at a time) ---
-        for i in range(0, len(targets), 100):
+        for i in range(0, len(targets), 50):
             if CANCEL_BROADCAST:
                 if status_message: await status_message.edit_text("🛑 <b>Cancelled.</b>")
                 clear_checkpoint()
