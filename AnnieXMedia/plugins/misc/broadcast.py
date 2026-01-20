@@ -36,7 +36,7 @@ logging.basicConfig(
 logger = logging.getLogger("Broadcast")
 
 # Reduced concurrency prevents server-side flood errors
-SEMAPHORE = asyncio.Semaphore(20) 
+SEMAPHORE = asyncio.Semaphore(10) 
 BROADCAST_FILE = "broadcast_state.json"
 FAILED_FILE = "broadcast_failed.json"
 BROADCAST_LOCK = asyncio.Lock()
