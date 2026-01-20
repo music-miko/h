@@ -106,7 +106,7 @@ CDN_RETRIES = 5
 CDN_RETRY_DELAY = 2
 
 # Whole flow timeout: MediaDB attempt + V2 attempt
-CYCLE_TIMEOUT_SEC = 120
+CYCLE_TIMEOUT_SEC = 80
 
 # --- CONCURRENCY CONTROL (FIX FOR STUCK BOT) ---
 # Limit concurrent downloads to prevent CPU/IO freezing
