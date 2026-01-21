@@ -1,4 +1,4 @@
-# Authored By Team Arc © 2025
+# Authored By Certified Coders © 2025
 # Refactored for Professional UX & Stability
 
 import asyncio
@@ -266,11 +266,11 @@ class Call:
                     results = MANUAL_SUGGESTIONS
                     if results:
                         text_list = "💤 Zzz… no tracks left, wake me up with a new one!\n👇 Tap a button below to play a recommended track!"
-                        random_choices = random.sample(results, 3)
+                        random_choices = random.sample(results, 4)
                         buttons = []
                         timestamp = int(time.time())
                         for track in random_choices:
-                            buttons.append([InlineKeyboardButton(text=f"▶️ {track['title'][:25]}...", callback_data=f"suggestion|{track['vidid']}|{timestamp}")])
+                            buttons.append([InlineKeyboardButton(text=f"{track['title'][:25]}", callback_data=f"suggestion|{track['vidid']}|{timestamp}")])
                         
                         await app.send_message(popped["chat_id"], text=text_list, reply_markup=InlineKeyboardMarkup(buttons))
                         LOGGER(__name__).info(f"Suggestions sent successfully to Chat ID: {popped['chat_id']}")
@@ -347,8 +347,24 @@ class Call:
 
             elif "vid_" in queued:
                 mystic = await app.send_message(original_chat_id, _["call_7"])
-                try: file_path, direct = await YouTube.download(videoid, mystic, videoid=True, video=True if str(streamtype) == "video" else False)
-                except: return await mystic.edit_text(_["call_6"], disable_web_page_preview=True)
+                try:
+                    file_path, direct = await YouTube.download(
+                        videoid,
+                        mystic,
+                        videoid=True,
+                        video=True if str(streamtype) == "video" else False,
+                    )
+                except:
+                    return await mystic.edit_text(_["call_6"], disable_web_page_preview=True)
+
+                # FIX: Check if file_path is None (Download failed or Video Disabled)
+                if not file_path:
+                    try:
+                        await mystic.edit_text("❌ **Error:** Could not retrieve audio/video source.\n\nIt might be restricted or video playback is disabled.")
+                    except:
+                        pass
+                    return
+
                 stream = dynamic_media_stream(path=file_path, video=video)
                 try: await client.play(chat_id, stream)
                 except: return await app.send_message(original_chat_id, text=_["call_6"])
