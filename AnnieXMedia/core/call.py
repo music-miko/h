@@ -1,4 +1,4 @@
-# Authored By Certified Coders © 2025
+# Authored By Team Arc © 2025
 # Refactored for Professional UX & Stability
 
 import asyncio
@@ -91,9 +91,6 @@ class Call:
         self.five = PyTgCalls(self.userbot5) if self.userbot5 else None
         self.active_calls: set[int] = set()
 
-    # ... [Keep your existing pause/resume/mute/unmute methods unchanged] ...
-    # I am omitting them here for brevity, but keep them exactly as they were.
-    
     @capture_internal_err
     async def pause_stream(self, chat_id: int) -> None:
         assistant = await group_assistant(self, chat_id)
@@ -241,7 +238,7 @@ class Call:
             try:
                 users = len(await assistant.get_participants(chat_id))
                 if users == 1:
-                    autoend[chat_id] = datetime.now() + timedelta(minutes=2)
+                    autoend[chat_id] = datetime.now() + timedelta(minutes=10)
             except:
                 pass
 
@@ -273,7 +270,7 @@ class Call:
                         buttons = []
                         timestamp = int(time.time())
                         for track in random_choices:
-                            buttons.append([InlineKeyboardButton(text=f"{track['title'][:25]}", callback_data=f"suggestion|{track['vidid']}|{timestamp}")])
+                            buttons.append([InlineKeyboardButton(text=f"▶️ {track['title'][:25]}...", callback_data=f"suggestion|{track['vidid']}|{timestamp}")])
                         
                         await app.send_message(popped["chat_id"], text=text_list, reply_markup=InlineKeyboardMarkup(buttons))
                         LOGGER(__name__).info(f"Suggestions sent successfully to Chat ID: {popped['chat_id']}")
@@ -304,14 +301,22 @@ class Call:
             except:
                 return
         else:
-            queued = check[0]["file"]
+            # === FIX: SNAPSHOT DATA TO PREVENT IndexError ===
+            if not check:
+                return 
+                
+            # Safely capture all variables NOW, before any async operation
+            track_data = check[0]
+            queued = track_data["file"]
+            title = track_data["title"].title()
+            user = track_data["by"]
+            original_chat_id = track_data["chat_id"]
+            streamtype = track_data["streamtype"]
+            videoid = track_data["vidid"]
+            duration = track_data["dur"] # Safely captured duration
+            
             language = await get_lang(chat_id)
             _ = get_string(language)
-            title = (check[0]["title"]).title()
-            user = check[0]["by"]
-            original_chat_id = check[0]["chat_id"]
-            streamtype = check[0]["streamtype"]
-            videoid = check[0]["vidid"]
             
             try: db[chat_id][0]["played"] = 0
             except: pass
@@ -335,7 +340,8 @@ class Call:
                 except Exception: return await app.send_message(original_chat_id, text=_["call_6"])
                 img = await get_thumb(videoid)
                 button = stream_markup(_, chat_id)
-                run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], check[0]["dur"], user), reply_markup=InlineKeyboardMarkup(button))
+                # Use local 'duration' variable
+                run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                 try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "tg"
                 except: pass
 
@@ -349,7 +355,8 @@ class Call:
                 img = await get_thumb(videoid)
                 button = stream_markup(_, chat_id)
                 await mystic.delete()
-                run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], check[0]["dur"], user), reply_markup=InlineKeyboardMarkup(button))
+                # Use local 'duration' variable
+                run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                 try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "stream"
                 except: pass
 
@@ -368,22 +375,27 @@ class Call:
                 except: return await app.send_message(original_chat_id, text=_["call_6"])
                 if videoid == "telegram":
                     button = stream_markup(_, chat_id)
-                    run = await app.send_photo(chat_id=original_chat_id, photo=(config.TELEGRAM_AUDIO_URL if str(streamtype) == "audio" else config.TELEGRAM_VIDEO_URL), caption=_["stream_1"].format(config.SUPPORT_CHAT, title[:23], check[0]["dur"], user), reply_markup=InlineKeyboardMarkup(button))
+                    # Use local 'duration' variable
+                    run = await app.send_photo(chat_id=original_chat_id, photo=(config.TELEGRAM_AUDIO_URL if str(streamtype) == "audio" else config.TELEGRAM_VIDEO_URL), caption=_["stream_1"].format(config.SUPPORT_CHAT, title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                     try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "tg"
                     except: pass
                 elif videoid == "soundcloud":
                     button = stream_markup(_, chat_id)
-                    run = await app.send_photo(chat_id=original_chat_id, photo=config.SOUNCLOUD_IMG_URL, caption=_["stream_1"].format(config.SUPPORT_CHAT, title[:23], check[0]["dur"], user), reply_markup=InlineKeyboardMarkup(button))
+                    # Use local 'duration' variable
+                    run = await app.send_photo(chat_id=original_chat_id, photo=config.SOUNCLOUD_IMG_URL, caption=_["stream_1"].format(config.SUPPORT_CHAT, title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                     try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "tg"
                     except: pass
                 else:
                     img = await get_thumb(videoid)
                     button = stream_markup(_, chat_id)
-                    try: run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], check[0]["dur"], user), reply_markup=InlineKeyboardMarkup(button))
+                    try: 
+                        # Use local 'duration' variable
+                        run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                     except FloodWait as e:
                         LOGGER(__name__).warning(f"FloodWait: Sleeping for {e.value}")
                         await asyncio.sleep(e.value)
-                        run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], check[0]["dur"], user), reply_markup=InlineKeyboardMarkup(button))
+                        # Use local 'duration' variable
+                        run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                     try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "stream"
                     except: pass
 
