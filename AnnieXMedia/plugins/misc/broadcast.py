@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import datetime
+from functools import partial
 
 from pyrogram import filters
 from pyrogram.enums import ChatMembersFilter
@@ -35,8 +36,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("Broadcast")
 
-# Reduced concurrency prevents server-side flood errors
-SEMAPHORE = asyncio.Semaphore(10) 
+# ---------------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------------
+
+# SPEED: Sends to 20 users simultaneously (Very Fast)
+SEMAPHORE = asyncio.Semaphore(20) 
+
+# PERFORMANCE: Only save to file every 500 messages (Prevents Lag)
+BATCH_SIZE = 500
+
 BROADCAST_FILE = "broadcast_state.json"
 FAILED_FILE = "broadcast_failed.json"
 BROADCAST_LOCK = asyncio.Lock()
@@ -65,7 +74,12 @@ def get_readable_time(seconds: int) -> str:
     time_list.reverse()
     return ":".join(time_list)
 
-def save_checkpoint(data):
+# NON-BLOCKING SAVE: Run file I/O in a separate thread to prevent bot lag
+async def save_checkpoint_async(data):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, partial(save_sync, data))
+
+def save_sync(data):
     with open(BROADCAST_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
@@ -92,8 +106,12 @@ def load_failed_list():
                 FAILED_IDS = set(json.load(f))
         except: pass
 
-def save_failed_list():
-    """Save new blocked/deleted users to file."""
+async def save_failed_list_async():
+    """Save failed list in background thread."""
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, save_failed_sync)
+
+def save_failed_sync():
     with open(FAILED_FILE, "w") as f:
         json.dump(list(FAILED_IDS), f)
 
@@ -142,6 +160,7 @@ async def run_broadcast(data, status_message=None):
             
             # 1. OPTIMIZATION: Skip known dead IDs immediately
             if chat_id in FAILED_IDS:
+                skipped += 1
                 return False
 
             async with SEMAPHORE:
@@ -169,48 +188,49 @@ async def run_broadcast(data, status_message=None):
                     FAILED_IDS.add(chat_id) 
                     failed += 1
                 
-                # 4. FIX: Catch Timeout -> Treat as failed
-                except asyncio.TimeoutError:
-                    failed += 1
-                    
                 except Exception:
                     failed += 1
                 
                 return False
 
-        # --- Batch Loop (100 at a time) ---
-        for i in range(0, len(targets), 50):
+        # --- Iteration Loop ---
+        while targets:
             if CANCEL_BROADCAST:
                 if status_message: await status_message.edit_text("🛑 <b>Cancelled.</b>")
                 clear_checkpoint()
                 return
 
-            batch = targets[i:i + 100]
+            # Take the next batch (Slicing is safe here)
+            batch = targets[:BATCH_SIZE]
+            # Remove them from the main list immediately (in memory)
+            targets = targets[BATCH_SIZE:]
+
+            # Launch 500 tasks (But Semaphore limits execution to 20 at a time)
             tasks = [deliver(t, t > 0) for t in batch]
-            
             await asyncio.gather(*tasks)
             
-            # Checkpoint Save
+            # Update Stats in Data
             data["stats"] = {
                 "sent_users": sent_users, 
                 "sent_chats": sent_chats, 
                 "failed": failed,
                 "skipped": skipped
             }
-            # Remove processed from queue
-            data["targets"] = targets[i + 100:] 
+            # Update Remaining Targets in Data
+            data["targets"] = targets
             
-            save_checkpoint(data)
-            save_failed_list() # Update blacklist file
+            # Async Save (Prevents Lag)
+            await save_checkpoint_async(data)
+            await save_failed_list_async()
 
-            # UI Update
+            # UI Update (Throttle edits to avoid rate limits)
             if status_message:
                 elapsed = time.time() - start_time
                 if elapsed == 0: elapsed = 1
                 
-                total_processed = sent_users + sent_chats + failed
+                total_processed = sent_users + sent_chats + failed + skipped
                 speed = total_processed / elapsed
-                remaining = len(data["targets"])
+                remaining = len(targets)
                 
                 if speed == 0: speed = 0.1
                 etc_str = get_readable_time(remaining / speed)
@@ -230,7 +250,7 @@ async def run_broadcast(data, status_message=None):
 
         # --- Finish ---
         clear_checkpoint()
-        save_failed_list()
+        await save_failed_list_async()
         total_time = get_readable_time(time.time() - start_time)
         
         final_text = (
@@ -283,10 +303,14 @@ async def broadcast_command(client, message: Message):
     if not raw_targets:
         return await message.reply_text("⚠ No recipients found.")
 
+    # FIX: DEDUPLICATION
+    # Convert to set and back to list to ensure NO DUPLICATES
+    unique_targets = list(set(raw_targets))
+
     # PRE-FILTERING: Calculate skipped users BEFORE starting
     valid_targets = []
     skipped_count = 0
-    for t in raw_targets:
+    for t in unique_targets:
         if t in FAILED_IDS:
             skipped_count += 1
         else:
@@ -310,7 +334,9 @@ async def broadcast_command(client, message: Message):
         "initiator": message.from_user.id,
         "start_time": time.time()
     }
-    save_checkpoint(state_data)
+    
+    # Use Async Save
+    await save_checkpoint_async(state_data)
 
     status_msg = await message.reply_text(f"📢 <b>Broadcast Started</b>\nTargets: {len(valid_targets)}\nSkipped (Dead): {skipped_count}")
     await run_broadcast(state_data, status_msg)
