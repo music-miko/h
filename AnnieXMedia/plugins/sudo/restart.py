@@ -26,7 +26,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURATION ---
 # Define IST Timezone (UTC + 5:30)
-IST = timezone(timedelta(hours=5, minutes=30))
+IST = timezone(timedelta(hours=5, minutes=45))
 SUPPORT_CHAT_ID = -1003043405529   
 
 # ---------------------
@@ -84,7 +84,7 @@ async def auto_restart_job():
             now = datetime.now(IST)
             
             # Set target to 6:30 AM IST today
-            target = now.replace(hour=5, minute=15, second=0, microsecond=0)
+            target = now.replace(hour=5, minute=45, second=0, microsecond=0)
             
             # If 6:30 AM has already passed today, schedule for tomorrow
             if target <= now:
