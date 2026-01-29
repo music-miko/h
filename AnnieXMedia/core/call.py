@@ -3,8 +3,6 @@
 
 import asyncio
 import os
-import random
-import time
 from datetime import datetime, timedelta
 from typing import Union, List, Dict
 
@@ -18,7 +16,6 @@ from pytgcalls.types import AudioQuality, ChatUpdate, MediaStream, StreamEnded, 
 
 import config
 from strings import get_string
-from strings.manual import MANUAL_SUGGESTIONS
 from AnnieXMedia import LOGGER, YouTube, app
 from AnnieXMedia.misc import db
 from AnnieXMedia.utils.database import (
@@ -255,39 +252,23 @@ class Call:
                 await set_loop(chat_id, loop)
             await auto_clean(popped)
 
-            # --- SUGGESTION SYSTEM START ---
             if not check:
-                # FIX: Check if bot is connected before generating suggestions to avoid Ctrl+C Spam
-                if not app.is_connected:
-                    return
-
+                # Queue empty: Send nice message, clear chat, and leave
                 try:
-                    LOGGER(__name__).info(f"Playback queue depleted for Chat ID: {chat_id}. Generating suggestions...")
-                    results = MANUAL_SUGGESTIONS
-                    if results:
-                        text_list = "💤 Zzz… no tracks left, wake me up with a new one!\n👇 Tap a button below to play a recommended track!"
-                        random_choices = random.sample(results, 4)
-                        buttons = []
-                        timestamp = int(time.time())
-                        for track in random_choices:
-                            buttons.append([InlineKeyboardButton(text=f"{track['title'][:25]}", callback_data=f"suggestion|{track['vidid']}|{timestamp}")])
-                        
-                        await app.send_message(popped["chat_id"], text=text_list, reply_markup=InlineKeyboardMarkup(buttons))
-                        LOGGER(__name__).info(f"Suggestions sent successfully to Chat ID: {popped['chat_id']}")
-
-                except Exception as e:
-                    LOGGER(__name__).error(f"Failed to send suggestions for {chat_id}: {e}")
-
+                    await app.send_message(
+                        popped["chat_id"],
+                        "<b>Queue Finished!</b> 📉\n\nThere are no more tracks in the playlist.\nLeaving the Voice Chat. Goodbye! 👋"
+                    )
+                except:
+                    pass
+                    
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
-                
-                # FIX: Use Timeout to prevent deadlock on leave
                 try:
                     await asyncio.wait_for(client.leave_call(chat_id), timeout=3.0)
                 except:
                     pass
                 return
-            # --- SUGGESTION SYSTEM END ---
 
         except:
             try:
