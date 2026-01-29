@@ -420,4 +420,4 @@ async def auto_clean():
         except: pass
 
 asyncio.create_task(auto_resume_check())
-# asyncio.create_task(auto_clean())
+asyncio.create_task(auto_clean())
