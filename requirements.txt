@@ -41,5 +41,5 @@ telegraph==2.2.0
 pytgcrypto==1.2.12
 unidecode==1.4.0
 wget==3.2
-yt-dlp[default]==2025.12.8
+yt-dlp[default]==2026.1.29
 git+https://github.com/CertifiedCoders/youtube-search-python
