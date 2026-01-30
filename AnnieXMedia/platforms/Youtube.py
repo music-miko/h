@@ -19,10 +19,11 @@ from AnnieXMedia.utils.downloader import media_download
 from AnnieXMedia.utils.errors import capture_internal_err
 from AnnieXMedia.utils.formatters import time_to_seconds
 from AnnieXMedia.utils.tuning import YTDLP_TIMEOUT
+from AnnieXMedia import LOGGER
 
 # === Constants ===
 YOUTUBE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
-CACHE_FILE = "youtube_cache.json"
+# CACHE_FILE removed
 
 # === Concurrency Control ===
 _API_SEMAPHORE = asyncio.Semaphore(25) 
@@ -89,6 +90,7 @@ def _dig(data: Any, *path: Union[str, int]) -> Any:
 
 @capture_internal_err
 async def cached_youtube_search(query: str) -> List[Dict]:
+    # Cache logic removed
     try:
         async with _API_SEMAPHORE:
             data = await asyncio.wait_for(
@@ -97,7 +99,8 @@ async def cached_youtube_search(query: str) -> List[Dict]:
             )
         result = data.get("result", [])
         return result
-    except Exception:
+    except Exception as e:
+        LOGGER(__name__).error(f"Search failed for query '{query}': {e}")
         return []
 
 
@@ -107,25 +110,7 @@ class YouTubeAPI:
         self.base_url = "https://www.youtube.com/watch?v="
         self.playlist_url = "https://youtube.com/playlist?list="
         self._url_pattern = re.compile(r"(?:youtube\.com|youtu\.be)")
-        self.cache_path = CACHE_FILE
-        self.cache = self._load_cache()
-
-    def _load_cache(self) -> Dict[str, Any]:
-        if not os.path.exists(self.cache_path):
-            return {}
-        try:
-            with open(self.cache_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return {}
-
-    def _save_to_cache(self, key: str, data: Dict) -> None:
-        self.cache[key] = data
-        try:
-            with open(self.cache_path, 'w', encoding='utf-8') as f:
-                json.dump(self.cache, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        # Cache initialization removed
 
     def _prepare_link(self, link: str, videoid: Union[str, bool, None] = None) -> str:
         if isinstance(videoid, str) and videoid.strip():
@@ -225,7 +210,8 @@ class YouTubeAPI:
                         if resp.status != 200:
                             return None
                         data = await resp.json()
-        except Exception:
+        except Exception as e:
+            LOGGER(__name__).error(f"Raw search failed: {e}")
             return None
 
         root = _dig(data, "contents", "twoColumnSearchResultsRenderer", "primaryContents", "sectionListRenderer", "contents")
@@ -234,12 +220,11 @@ class YouTubeAPI:
 
     # === Metadata Fetching ===
     @capture_internal_err
-    async def _fetch_video_info(self, query: str, *, use_cache: bool = True) -> Optional[Dict]:
+    async def _fetch_video_info(self, query: str) -> Optional[Dict]:
         q = self._prepare_link(query)
         is_link = q.startswith("http")
 
-        if use_cache and q in self.cache:
-            return self.cache[q]
+        # Removed cache check
 
         info = await self._raw_youtube_search(q)
         
@@ -264,11 +249,11 @@ class YouTubeAPI:
                             "thumbnail": raw_info.get("thumbnail", ""),
                             "link": raw_info.get("webpage_url", q)
                         }
-            except Exception:
+            except Exception as e:
+                LOGGER(__name__).error(f"yt-dlp fetch failed: {e}")
                 pass
 
-        if info:
-            self._save_to_cache(q, info)
+        # Removed cache save
             
         return info
 
@@ -303,7 +288,13 @@ class YouTubeAPI:
             if vid_id or prepared_link.startswith("http"):
                  return "Unknown", "00:00", 0, "", vid_id or ""
             
-            raise ValueError(f"Video not found for: {prepared_link}")
+            # Log technical error, display user-friendly message
+            LOGGER(__name__).error(f"Video details failed for: {prepared_link}")
+            raise ValueError(
+                "❌ **Failed to Process Query**\n\n"
+                "I was unable to retrieve information for this request.\n"
+                "Please try searching via **@MultiSourceDLBot** in Inline Mode for song search and download."
+            )
 
         title = info.get("title") or "Unknown"
         dt = info.get("duration") or "00:00"
@@ -353,7 +344,13 @@ class YouTubeAPI:
                     "thumbnail": "", "link": prepared_link
                 }
             else:
-                 raise ValueError(f"Could not fetch info for '{prepared_link}' via any method.")
+                 # Log technical error, display user-friendly message
+                 LOGGER(__name__).error(f"Track info failed for '{prepared_link}'")
+                 raise ValueError(
+                    "❌ **Failed to Process Query**\n\n"
+                    "I was unable to retrieve information for this request.\n"
+                    "Please try searching via **@MultiSourceDLBot** in Inline Mode for song search and download."
+                 )
 
         thumbs = info.get("thumbnails", [{}])
         thumb_url = info.get("thumbnail") or (thumbs[-1].get("url") if thumbs else "") or ""
@@ -393,7 +390,8 @@ class YouTubeAPI:
                 )
             items = [video.get("id") for video in plist.get("videos", [])[:limit] if video.get("id")]
             if items: return items
-        except Exception:
+        except Exception as e:
+            LOGGER(__name__).error(f"Playlist fetch failed: {e}")
             pass
 
         stdout, _ = await _exec_proc(
@@ -431,7 +429,8 @@ class YouTubeAPI:
                     "format": fmt["format"], "filesize": size, "format_id": fmt["format_id"],
                     "ext": fmt["ext"], "format_note": fmt.get("format_note", ""), "yturl": link,
                 })
-        except Exception:
+        except Exception as e:
+            LOGGER(__name__).error(f"Format extraction failed: {e}")
             pass
         return out, link
 
@@ -447,7 +446,8 @@ class YouTubeAPI:
                     timeout=_API_TIMEOUT
                 )
             results = data.get("result", [])
-        except Exception:
+        except Exception as e:
+            LOGGER(__name__).error(f"Slider VideosSearch failed: {e}")
             query = self._prepare_link(link, videoid)
             stdout, _ = await _exec_proc(
                 "yt-dlp", *(_cookies_args()), "--dump-json", "--default-search",
@@ -466,7 +466,13 @@ class YouTubeAPI:
                     except: pass
         
         if not results or query_type >= len(results):
-            raise IndexError(f"Query index {query_type} out of range")
+            # Log technical error, display user-friendly message
+            LOGGER(__name__).error(f"Slider query index {query_type} out of range or no results")
+            raise IndexError(
+                "❌ **Failed to Process Query**\n\n"
+                "I was unable to retrieve information for this request.\n"
+                "Please try searching via **@MultiSourceDLBot** in Inline Mode for song search and download."
+            )
         r = results[query_type]
         return (
             r.get("title", ""), r.get("duration"),
