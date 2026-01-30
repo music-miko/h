@@ -4,7 +4,9 @@
 import asyncio
 import os
 import re
+import time
 import uuid
+import contextlib
 from pathlib import Path
 from typing import Dict, Optional, Any
 from urllib.parse import urlparse
@@ -13,6 +15,9 @@ import aiofiles
 import aiohttp
 from aiohttp import TCPConnector
 from motor.motor_asyncio import AsyncIOMotorClient
+
+# --- Pyrogram Error Handling ---
+from pyrogram.errors import FloodWait
 
 from AnnieXMedia.core.dir import DOWNLOAD_DIR
 from AnnieXMedia.utils.tuning import CHUNK_SIZE
@@ -71,6 +76,7 @@ DOWNLOAD_STATS: Dict[str, int] = {
     "timeout_fail": 0,
     "no_candidate": 0,
     "tg_fail": 0,
+    "tg_flood_skip": 0,
     "cdn_fail": 0,
     "hard_cycle_retries": 0,
     "media_db_hit": 0,
@@ -106,13 +112,23 @@ CDN_RETRIES = 5
 CDN_RETRY_DELAY = 2
 
 # Whole flow timeout: MediaDB attempt + V2 attempt
-CYCLE_TIMEOUT_SEC = 80
+# Increased slightly to allow for queueing time
+CYCLE_TIMEOUT_SEC = 90
 
 # --- CONCURRENCY CONTROL ---
-# Limit concurrent downloads to 20 for stability in 100+ VCs
+# Global Limit: How many files can download at once (TG + V2 combined)
 MAX_CONCURRENT_DOWNLOADS = 20
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
+# --- TELEGRAM SPECIFIC THROTTLING ---
+# OPTIMIZED FOR 10-15 REQ/MIN
+# 6 Concurrent downloads is enough to handle 15/min (1 every 4s)
+# without saturating network or triggering mass-floodwait.
+MAX_TG_CONCURRENCY = 6
+TG_SEMAPHORE = asyncio.Semaphore(MAX_TG_CONCURRENCY)
+
+# Circuit Breaker: Stores the timestamp when TG is allowed again
+TG_FLOOD_COOLDOWN = 0.0
 
 # -----------------------
 # Regex / helpers
@@ -327,11 +343,24 @@ async def _download_from_cdn(cdn_url: str, out_path: str) -> Optional[str]:
 # MEDIA DB FETCH
 # -----------------------
 async def _download_from_media_db(track_id: str, is_video: bool) -> Optional[str]:
+    """
+    Downloads media from Telegram.
+    Includes 'Circuit Breaker' logic: If TG is floodwaiting, it skips immediately.
+    """
+    global TG_FLOOD_COOLDOWN
+
     if not track_id:
         return None
 
     if TG_APP is None or not DB_URI or not MEDIA_CHANNEL_ID:
         return None
+
+    # === Check Circuit Breaker ===
+    # If a previous request triggered a FloodWait, we skip TG completely
+    # and return None, causing the bot to immediately use V2 API.
+    if time.time() < TG_FLOOD_COOLDOWN:
+        _inc("tg_flood_skip")
+        return None 
 
     try:
         ch_id = int(MEDIA_CHANNEL_ID)
@@ -348,59 +377,92 @@ async def _download_from_media_db(track_id: str, is_video: bool) -> Optional[str
     ]
 
     msg_id: Optional[int] = None
-    used_key: Optional[str] = None
 
+    # === Fast DB Check ===
     try:
         for k in keys_to_try:
             if await is_media(k, isVideo=is_video):
                 msg_id = await get_media_id(k, isVideo=is_video)
-                used_key = k
                 break
+    except Exception:
+        _inc("media_db_fail")
+        return None
 
-        if not msg_id:
-            _inc("media_db_miss")
-            return None
+    if not msg_id:
+        _inc("media_db_miss")
+        return None
 
-        _inc("media_db_hit")
-        out_dir = str(Path(DOWNLOAD_DIR))
-        _ensure_dir(out_dir)
+    _inc("media_db_hit")
+    out_dir = str(Path(DOWNLOAD_DIR))
+    _ensure_dir(out_dir)
 
-        final_path = os.path.join(out_dir, f"{track_id}.{ext}")
-        tmp_path = final_path + ".temp"
+    final_path = os.path.join(out_dir, f"{track_id}.{ext}")
+    tmp_path = final_path + ".temp"
 
-        if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-            return final_path
+    if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+        return final_path
 
-        msg = await TG_APP.get_messages(ch_id, msg_id)
-        if not msg:
-            _inc("media_db_fail")
-            return None
-
-        dl_res = await TG_APP.download_media(msg, file_name=tmp_path)
-        fixed = _resolve_if_dir(dl_res) if isinstance(dl_res, str) else None
-
-        if not fixed or not os.path.exists(fixed) or os.path.getsize(fixed) <= 0:
-            _inc("media_db_fail")
-            with contextlib.suppress(Exception):
-                if tmp_path and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            return None
-
+    # === Safe Telegram Download ===
+    # The Semaphore ensures we never have more than 6 active TG downloads.
+    # If 7th request comes, it waits here until one finishes.
+    async with TG_SEMAPHORE:
         try:
-            if fixed != final_path:
-                os.replace(fixed, final_path)
-        except Exception:
-            final_path = fixed
+            # 1. Fetch Message
+            try:
+                msg = await TG_APP.get_messages(ch_id, msg_id)
+            except FloodWait as e:
+                # Trigger Circuit Breaker for everyone
+                TG_FLOOD_COOLDOWN = time.time() + e.value + 5
+                LOGGER.warning(f"⚠️ Telegram FloodWait during fetch! Switching to V2 for {e.value + 5}s")
+                _inc("tg_fail")
+                return None
+            
+            if not msg:
+                _inc("media_db_fail")
+                return None
 
-        if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
-            return final_path
+            # 2. Download Media (With 300s Timeout)
+            try:
+                dl_res = await asyncio.wait_for(
+                    TG_APP.download_media(msg, file_name=tmp_path),
+                    timeout=300
+                )
+            except asyncio.TimeoutError:
+                LOGGER.error(f"❌ Telegram download timed out for {track_id} (Stuck connection)")
+                _inc("timeout_fail")
+                return None
+            except FloodWait as e:
+                # Trigger Circuit Breaker for everyone
+                TG_FLOOD_COOLDOWN = time.time() + e.value + 5
+                LOGGER.warning(f"⚠️ Telegram FloodWait during download! Switching to V2 for {e.value + 5}s")
+                _inc("tg_fail")
+                return None
+            
+            fixed = _resolve_if_dir(dl_res) if isinstance(dl_res, str) else None
 
-        _inc("media_db_fail")
-        return None
+            if not fixed or not os.path.exists(fixed) or os.path.getsize(fixed) <= 0:
+                _inc("media_db_fail")
+                with contextlib.suppress(Exception):
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                return None
 
-    except Exception as e:
-        _inc("media_db_fail")
-        return None
+            try:
+                if fixed != final_path:
+                    os.replace(fixed, final_path)
+            except Exception:
+                final_path = fixed
+
+            if os.path.exists(final_path) and os.path.getsize(final_path) > 0:
+                return final_path
+
+            _inc("media_db_fail")
+            return None
+
+        except Exception as e:
+            LOGGER.error(f"Unexpected Telegram DB Error: {e}")
+            _inc("media_db_fail")
+            return None
 
 
 # -----------------------
@@ -582,7 +644,7 @@ async def media_download(link: str, type: str, title: str = "", video_id: str = 
             is_video = (type == "video")
             is_audio = (type == "audio")
 
-            # 1) Media DB first
+            # 1) Media DB first (with smart circuit breaker)
             if vid:
                 db_path = await _download_from_media_db(vid, is_video=is_video)
                 if db_path and os.path.exists(db_path):
@@ -592,7 +654,7 @@ async def media_download(link: str, type: str, title: str = "", video_id: str = 
                     LOGGER.info(f"MEDIA_DB_DOWNLOAD_SUCCESS type={type} title='{title or 'Unknown'}' path='{db_path}'")
                     return db_path
 
-            # 2) V2 fallback
+            # 2) V2 fallback (If TG failed/skipped)
             v2_path = await v2_download(link, media_type=("video" if is_video else "audio"))
             if v2_path and os.path.exists(v2_path):
                 _inc("success")
