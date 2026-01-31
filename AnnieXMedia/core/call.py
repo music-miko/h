@@ -96,7 +96,6 @@ class Call:
         try:
             current_pid = os.getpid()
             for proc in psutil.process_iter(['pid', 'name', 'ppid']):
-                # Find ffmpeg processes spawned by this bot that are zombies
                 if proc.info['name'] == 'ffmpeg' and proc.info['ppid'] == current_pid:
                     if proc.status() == psutil.STATUS_ZOMBIE:
                         proc.kill()
@@ -132,7 +131,6 @@ class Call:
         
         self.active_calls.discard(chat_id)
         try:
-            # FIX: Add timeout to prevent freezing if Telegram is laggy
             await asyncio.wait_for(assistant.leave_call(chat_id), timeout=5.0)
         except Exception:
             pass
@@ -156,7 +154,6 @@ class Call:
         
         self.active_calls.discard(chat_id)
         try:
-            # FIX: Add timeout to prevent freezing if Telegram is laggy
             await asyncio.wait_for(assistant.leave_call(chat_id), timeout=5.0)
         except Exception:
             pass
@@ -286,8 +283,7 @@ class Call:
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
                 try:
-                    # FIX: Add timeout to prevent freezing if Telegram is laggy
-                    await asyncio.wait_for(client.leave_call(chat_id), timeout=5.0)
+                    await asyncio.wait_for(client.leave_call(chat_id), timeout=3.0)
                 except:
                     pass
                 return
@@ -297,19 +293,16 @@ class Call:
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
                 try:
-                    # FIX: Add timeout to prevent freezing if Telegram is laggy
-                    await asyncio.wait_for(client.leave_call(chat_id), timeout=5.0)
+                    await asyncio.wait_for(client.leave_call(chat_id), timeout=3.0)
                 except:
                     pass
                 return 
             except:
                 return
         else:
-            # === FIX: SNAPSHOT DATA TO PREVENT IndexError ===
             if not check:
                 return 
                 
-            # Safely capture all variables NOW, before any async operation
             track_data = check[0]
             queued = track_data["file"]
             title = track_data["title"].title()
@@ -317,7 +310,7 @@ class Call:
             original_chat_id = track_data["chat_id"]
             streamtype = track_data["streamtype"]
             videoid = track_data["vidid"]
-            duration = track_data["dur"] # Safely captured duration
+            duration = track_data["dur"]
             
             language = await get_lang(chat_id)
             _ = get_string(language)
@@ -344,7 +337,6 @@ class Call:
                 except Exception: return await app.send_message(original_chat_id, text=_["call_6"])
                 img = await get_thumb(videoid)
                 button = stream_markup(_, chat_id)
-                # Use local 'duration' variable
                 run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                 try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "tg"
                 except: pass
@@ -361,7 +353,6 @@ class Call:
                 except:
                     return await mystic.edit_text(_["call_6"], disable_web_page_preview=True)
 
-                # FIX: Check if file_path is None (Download failed or Video Disabled)
                 if not file_path:
                     try:
                         await mystic.edit_text("❌ **Error:** Could not retrieve audio/video source.\n\nIt might be restricted or video playback is disabled.")
@@ -375,7 +366,6 @@ class Call:
                 img = await get_thumb(videoid)
                 button = stream_markup(_, chat_id)
                 await mystic.delete()
-                # Use local 'duration' variable
                 run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                 try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "stream"
                 except: pass
@@ -395,13 +385,11 @@ class Call:
                 except: return await app.send_message(original_chat_id, text=_["call_6"])
                 if videoid == "telegram":
                     button = stream_markup(_, chat_id)
-                    # Use local 'duration' variable
                     run = await app.send_photo(chat_id=original_chat_id, photo=(config.TELEGRAM_AUDIO_URL if str(streamtype) == "audio" else config.TELEGRAM_VIDEO_URL), caption=_["stream_1"].format(config.SUPPORT_CHAT, title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                     try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "tg"
                     except: pass
                 elif videoid == "soundcloud":
                     button = stream_markup(_, chat_id)
-                    # Use local 'duration' variable
                     run = await app.send_photo(chat_id=original_chat_id, photo=config.SOUNCLOUD_IMG_URL, caption=_["stream_1"].format(config.SUPPORT_CHAT, title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                     try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "tg"
                     except: pass
@@ -409,12 +397,10 @@ class Call:
                     img = await get_thumb(videoid)
                     button = stream_markup(_, chat_id)
                     try: 
-                        # Use local 'duration' variable
                         run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                     except FloodWait as e:
                         LOGGER(__name__).warning(f"FloodWait: Sleeping for {e.value}")
                         await asyncio.sleep(e.value)
-                        # Use local 'duration' variable
                         run = await app.send_photo(chat_id=original_chat_id, photo=img, caption=_["stream_1"].format(f"https://t.me/{app.username}?start=info_{videoid}", title[:23], duration, user), reply_markup=InlineKeyboardMarkup(button))
                     try: db[chat_id][0]["mystic"] = run; db[chat_id][0]["markup"] = "stream"
                     except: pass
@@ -457,18 +443,34 @@ class Call:
                 is_left_group = status & ChatUpdate.Status.LEFT_GROUP
 
                 if is_closed or is_kicked or is_left_group:
+                    # ✅ FIXED: Only allow the ACTIVE assistant to send the message
+                    # This prevents 4-5 duplicate messages from multiple assistants
+                    try:
+                        active_client = await group_assistant(self, chat_id)
+                        if client != active_client:
+                            return
+                    except:
+                        # If we can't verify, we proceed cautiously or return to be safe
+                        # Usually better to be safe than spam
+                        pass
+
                     reason = "Unknown error"
                     if is_closed:
-                        reason = "Voice Chat was ended"
+                        reason = "Voice Chat Ended by Admin"
                     elif is_kicked:
-                        reason = "Assistant was banned/kicked from Voice Chat"
+                        reason = "Assistant was banned/kicked"
                     elif is_left_group:
                         reason = "Assistant left the group"
 
+                    # Professional Message Format
                     try:
                         await app.send_message(
                             chat_id,
-                            f"❌ **Connection Lost**\n\n**Reason:** {reason}."
+                            (
+                                "<b>⚠️ Voice Chat Ended</b>\n\n"
+                                f"**Reason:** {reason}.\n"
+                                "<i>Playback has been stopped and the assistant has disconnected.</i>"
+                            )
                         )
                     except Exception:
                         pass
