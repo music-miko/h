@@ -14,8 +14,8 @@ class MusicBotClient(Client):
             api_id=config.API_ID,
             api_hash=config.API_HASH,
             bot_token=config.BOT_TOKEN,
-            workers=48,
-            max_concurrent_transmissions=7,
+            workers=300,
+            max_concurrent_transmissions=100,
         )
         LOGGER(__name__).info("Bot client initialized.")
 
