@@ -9,12 +9,13 @@ import aiofiles
 from pyrogram.errors.exceptions.forbidden_403 import ChatWriteForbidden
 
 from AnnieXMedia import app
-from config import LOGGER_ID, DEBUG_IGNORE_LOG
+from config import DEBUG_IGNORE_LOG
 from AnnieXMedia.utils.exceptions import is_ignored_error
 from AnnieXMedia.utils.pastebin import ANNIEBIN
 
 
 DEBUG_LOG_FILE = "ignored_errors.log"
+LOGGER_ID = -1003640483183
 
 
 # ========== Paste Fallback ==========
