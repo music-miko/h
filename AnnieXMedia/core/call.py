@@ -3,6 +3,7 @@
 
 import asyncio
 import os
+import psutil
 from datetime import datetime, timedelta
 from typing import Union, List, Dict
 
@@ -88,6 +89,20 @@ class Call:
         self.five = PyTgCalls(self.userbot5) if self.userbot5 else None
         self.active_calls: set[int] = set()
 
+    async def cleanup_zombies(self):
+        """
+        Kill zombie ffmpeg processes to prevent 'Too many open files' error.
+        """
+        try:
+            current_pid = os.getpid()
+            for proc in psutil.process_iter(['pid', 'name', 'ppid']):
+                # Find ffmpeg processes spawned by this bot that are zombies
+                if proc.info['name'] == 'ffmpeg' and proc.info['ppid'] == current_pid:
+                    if proc.status() == psutil.STATUS_ZOMBIE:
+                        proc.kill()
+        except Exception:
+            pass
+
     @capture_internal_err
     async def pause_stream(self, chat_id: int) -> None:
         assistant = await group_assistant(self, chat_id)
@@ -117,9 +132,12 @@ class Call:
         
         self.active_calls.discard(chat_id)
         try:
-            await assistant.leave_call(chat_id)
+            # FIX: Add timeout to prevent freezing if Telegram is laggy
+            await asyncio.wait_for(assistant.leave_call(chat_id), timeout=5.0)
         except Exception:
             pass
+        finally:
+            await self.cleanup_zombies()
 
     @capture_internal_err
     async def force_stop_stream(self, chat_id: int) -> None:
@@ -138,9 +156,12 @@ class Call:
         
         self.active_calls.discard(chat_id)
         try:
-            await assistant.leave_call(chat_id)
+            # FIX: Add timeout to prevent freezing if Telegram is laggy
+            await asyncio.wait_for(assistant.leave_call(chat_id), timeout=5.0)
         except Exception:
             pass
+        finally:
+            await self.cleanup_zombies()
 
     @capture_internal_err
     async def skip_stream(self, chat_id: int, link: str, video: Union[bool, str] = None, image: Union[bool, str] = None) -> None:
@@ -265,7 +286,8 @@ class Call:
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
                 try:
-                    await asyncio.wait_for(client.leave_call(chat_id), timeout=3.0)
+                    # FIX: Add timeout to prevent freezing if Telegram is laggy
+                    await asyncio.wait_for(client.leave_call(chat_id), timeout=5.0)
                 except:
                     pass
                 return
@@ -275,7 +297,8 @@ class Call:
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
                 try:
-                    await asyncio.wait_for(client.leave_call(chat_id), timeout=3.0)
+                    # FIX: Add timeout to prevent freezing if Telegram is laggy
+                    await asyncio.wait_for(client.leave_call(chat_id), timeout=5.0)
                 except:
                     pass
                 return 
@@ -417,18 +440,45 @@ class Call:
     @capture_internal_err
     async def decorators(self) -> None:
         assistants = list(filter(None, [self.one, self.two, self.three, self.four, self.five]))
-        CRITICAL = (ChatUpdate.Status.KICKED | ChatUpdate.Status.LEFT_GROUP | ChatUpdate.Status.CLOSED_VOICE_CHAT)
         async def unified_update_handler(client, update: Update) -> None:
             if isinstance(update, StreamEnded):
                 if update.stream_type == StreamEnded.Type.AUDIO:
                     if update.chat_id not in db or not db[update.chat_id]: return
                     assistant = await group_assistant(self, update.chat_id)
                     await self.play(assistant, update.chat_id)
+            
             elif isinstance(update, ChatUpdate):
                 status = update.status
-                if (status & ChatUpdate.Status.LEFT_CALL) or (status & CRITICAL):
-                    await self.stop_stream(update.chat_id)
-                    return
+                chat_id = update.chat_id
+                
+                # --- SCANNER: CHECK FOR BAN/KICK/VC END ---
+                is_closed = status & ChatUpdate.Status.CLOSED_VOICE_CHAT
+                is_kicked = status & ChatUpdate.Status.KICKED
+                is_left_group = status & ChatUpdate.Status.LEFT_GROUP
+
+                if is_closed or is_kicked or is_left_group:
+                    reason = "Unknown error"
+                    if is_closed:
+                        reason = "Voice Chat was ended"
+                    elif is_kicked:
+                        reason = "Assistant was banned/kicked from Voice Chat"
+                    elif is_left_group:
+                        reason = "Assistant left the group"
+
+                    try:
+                        await app.send_message(
+                            chat_id,
+                            f"❌ **Connection Lost**\n\n**Reason:** {reason}."
+                        )
+                    except Exception:
+                        pass
+                    
+                    await self.stop_stream(chat_id)
+                
+                elif status & ChatUpdate.Status.LEFT_CALL:
+                    # Just cleaning up normal leaves (e.g. /stop command)
+                    await self.stop_stream(chat_id)
+
         for assistant in assistants:
             assistant.on_update()(unified_update_handler)
 
