@@ -112,19 +112,16 @@ CDN_RETRIES = 5
 CDN_RETRY_DELAY = 2
 
 # Whole flow timeout: MediaDB attempt + V2 attempt
-# Increased slightly to allow for queueing time
 CYCLE_TIMEOUT_SEC = 90
 
 # --- CONCURRENCY CONTROL ---
 # Global Limit: How many files can download at once (TG + V2 combined)
-MAX_CONCURRENT_DOWNLOADS = 20
+MAX_CONCURRENT_DOWNLOADS = 100
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 # --- TELEGRAM SPECIFIC THROTTLING ---
-# OPTIMIZED FOR 10-15 REQ/MIN
-# 6 Concurrent downloads is enough to handle 15/min (1 every 4s)
-# without saturating network or triggering mass-floodwait.
-MAX_TG_CONCURRENCY = 6
+# OPTIMIZED FOR 32GB RAM & High Load
+MAX_TG_CONCURRENCY = 20
 TG_SEMAPHORE = asyncio.Semaphore(MAX_TG_CONCURRENCY)
 
 # Circuit Breaker: Stores the timestamp when TG is allowed again
