@@ -25,83 +25,47 @@ from AnnieXMedia.utils.pastebin import ANNIEBIN
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURATION ---
-# Define IST Timezone (UTC + 5:30)
 IST = timezone(timedelta(hours=5, minutes=45))
 SUPPORT_CHAT_ID = -1003043405529   
-
-# ---------------------
 
 async def is_heroku():
     return "heroku" in socket.getfqdn()
 
-def cleanup_storage():
-    folders_to_remove = ["downloads", "raw_files", "cache"]
-    for folder in folders_to_remove:
-        try:
-            shutil.rmtree(folder)
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            print(f"[CLEANUP] Failed to delete {folder}: {e}")
+# FIX: Run blocking I/O in a separate thread
+async def cleanup_storage():
+    def _cleanup():
+        folders_to_remove = ["downloads", "raw_files", "cache"]
+        for folder in folders_to_remove:
+            try:
+                shutil.rmtree(folder)
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                print(f"[CLEANUP] Failed to delete {folder}: {e}")
 
-    for root, dirs, files in os.walk("."):
-        for d in dirs:
-            if d == "__pycache__":
-                try:
-                    shutil.rmtree(os.path.join(root, d))
-                except:
-                    pass
+        for root, dirs, files in os.walk("."):
+            for d in dirs:
+                if d == "__pycache__":
+                    try:
+                        shutil.rmtree(os.path.join(root, d))
+                    except:
+                        pass
+    
+    await asyncio.get_running_loop().run_in_executor(None, _cleanup)
 
-# --- STARTUP NOTIFICATION (SENT AFTER RESTART) ---
-async def send_startup_notification():
-    """Sends a professional status report to support chat when the bot comes online."""
-    # Wait 10 seconds to ensure connection is fully stable
-    await asyncio.sleep(10)
-    try:
-        now = datetime.now(IST)
-        await app.send_message(
-            chat_id=SUPPORT_CHAT_ID,
-            text=(
-                "<b>🚀 System Online</b>\n\n"
-                "<b>🤖 Bot Status:</b> 🟢 <b>Online</b>\n"
-                f"<b>📅 Date:</b> {now.strftime('%B %d, %Y')}\n"
-                f"<b>⏰ Time:</b> {now.strftime('%I:%M %p')} IST\n\n"
-                "<b>✅ Systems Check:</b>\n"
-                "• Database: Connected 🗄️\n"
-                "• Modules: Loaded 📦\n"
-                "• Audio Client: Active 🔊\n\n"
-                "<i>The music bot has started successfully and is ready for use!</i> 🎵"
-            )
-        )
-    except Exception as e:
-        print(f"[STARTUP] Failed to send startup message: {e}")
-
-# --- AUTO RESTART SCHEDULER (6:30 AM IST) ---
 async def auto_restart_job():
     while True:
         try:
-            # Get current time in IST
             now = datetime.now(IST)
-            
-            # Set target to 6:30 AM IST today
             target = now.replace(hour=5, minute=45, second=0, microsecond=0)
-            
-            # If 6:30 AM has already passed today, schedule for tomorrow
             if target <= now:
                 target += timedelta(days=1)
-            
             wait_seconds = (target - now).total_seconds()
-            
-            # Log the schedule
             print(f"[SCHEDULER] Auto-Restart scheduled for {target.strftime('%Y-%m-%d %I:%M %p')} IST")
             
-            # Wait until target time
             await asyncio.sleep(wait_seconds)
             
-            # --- START RESTART SEQUENCE ---
             print("[SCHEDULER] Executing Auto-Restart & Cleanup...")
-            
-            # 1. Notify Active Chats
             try:
                 ac_chats = await get_active_chats()
                 for x in ac_chats:
@@ -122,18 +86,13 @@ async def auto_restart_job():
             except Exception as e:
                 print(f"[SCHEDULER] Error notifying chats: {e}")
 
-            # 2. Clean Storage
-            cleanup_storage()
-
-            # 3. Restart System
+            await cleanup_storage()
             os.execv(sys.executable, [sys.executable, "-m", "AnnieXMedia"])
             
         except Exception as e:
             print(f"[SCHEDULER] Error in auto-restart loop: {e}")
             await asyncio.sleep(60) 
 
-# Initialize Background Tasks
-asyncio.create_task(send_startup_notification())
 asyncio.create_task(auto_restart_job())
 
 
@@ -161,8 +120,15 @@ async def update_(client, message, _):
     except InvalidGitRepositoryError:
         return await response.edit("❌ <b>Git Error:</b> Invalid repository.")
 
-    os.system(f"git fetch origin {config.UPSTREAM_BRANCH} &> /dev/null")
-    await asyncio.sleep(7)
+    # FIX: Use asyncio subprocess instead of blocking os.system
+    proc = await asyncio.create_subprocess_shell(
+        f"git fetch origin {config.UPSTREAM_BRANCH}",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    await proc.communicate()
+    
+    await asyncio.sleep(1) # Reduced sleep
 
     verification = ""
     REPO_ = repo.remotes.origin.url.split(".git")[0]
@@ -202,7 +168,13 @@ async def update_(client, message, _):
     else:
         nrs = await response.edit(_final_updates_, disable_web_page_preview=True)
 
-    os.system("git stash &> /dev/null && git pull")
+    # FIX: Async git pull
+    proc = await asyncio.create_subprocess_shell(
+        "git stash && git pull",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    await proc.communicate()
 
     try:
         served_chats = await get_active_chats()
@@ -220,7 +192,7 @@ async def update_(client, message, _):
     except:
         pass
 
-    cleanup_storage()
+    await cleanup_storage()
 
     if await is_heroku():
         try:
@@ -256,7 +228,7 @@ async def restart_(_, message):
         except:
             pass
 
-    cleanup_storage()
+    await cleanup_storage()
 
     await response.edit_text(
         "✅ <b>Restart Initiated</b>\n\n"
