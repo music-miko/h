@@ -3,7 +3,6 @@
 
 import asyncio
 import os
-import psutil
 from datetime import datetime, timedelta
 from typing import Union, List, Dict
 
@@ -89,19 +88,6 @@ class Call:
         self.five = PyTgCalls(self.userbot5) if self.userbot5 else None
         self.active_calls: set[int] = set()
 
-    async def cleanup_zombies(self):
-        """
-        Kill zombie ffmpeg processes to prevent 'Too many open files' error.
-        """
-        try:
-            current_pid = os.getpid()
-            for proc in psutil.process_iter(['pid', 'name', 'ppid']):
-                if proc.info['name'] == 'ffmpeg' and proc.info['ppid'] == current_pid:
-                    if proc.status() == psutil.STATUS_ZOMBIE:
-                        proc.kill()
-        except Exception:
-            pass
-
     @capture_internal_err
     async def pause_stream(self, chat_id: int) -> None:
         assistant = await group_assistant(self, chat_id)
@@ -131,11 +117,10 @@ class Call:
         
         self.active_calls.discard(chat_id)
         try:
+            # Keep timeout to prevent freeze, but REMOVE cleanup_zombies
             await asyncio.wait_for(assistant.leave_call(chat_id), timeout=5.0)
         except Exception:
             pass
-        finally:
-            await self.cleanup_zombies()
 
     @capture_internal_err
     async def force_stop_stream(self, chat_id: int) -> None:
@@ -154,15 +139,18 @@ class Call:
         
         self.active_calls.discard(chat_id)
         try:
+            # Keep timeout to prevent freeze, but REMOVE cleanup_zombies
             await asyncio.wait_for(assistant.leave_call(chat_id), timeout=5.0)
         except Exception:
             pass
-        finally:
-            await self.cleanup_zombies()
 
     @capture_internal_err
     async def skip_stream(self, chat_id: int, link: str, video: Union[bool, str] = None, image: Union[bool, str] = None) -> None:
         assistant = await group_assistant(self, chat_id)
+        if not link.startswith("http"):
+            if not os.path.exists(link):
+                raise AssistantErr("❌ **Media Error:** File not found. Skipped.")
+
         stream = dynamic_media_stream(path=link, video=bool(video))
         await assistant.play(chat_id, stream)
 
@@ -175,6 +163,9 @@ class Call:
     @capture_internal_err
     async def seek_stream(self, chat_id: int, file_path: str, to_seek: str, duration: str, mode: str) -> None:
         assistant = await group_assistant(self, chat_id)
+        if not file_path.startswith("http") and not os.path.exists(file_path):
+             raise AssistantErr("❌ **Seek Error:** Media file not found.")
+
         ffmpeg_params = f"-ss {to_seek} -to {duration}"
         is_video = mode == "video"
         stream = dynamic_media_stream(path=file_path, video=is_video, ffmpeg_params=ffmpeg_params)
@@ -226,6 +217,10 @@ class Call:
         assistant = await group_assistant(self, chat_id)
         lang = await get_lang(chat_id)
         _ = get_string(lang)
+        
+        if not link.startswith("http") and not os.path.exists(link):
+             raise AssistantErr("❌ **Error:** Media file could not be found on server.")
+
         stream = dynamic_media_stream(path=link, video=bool(video))
         try:
             await assistant.play(chat_id, stream)
@@ -271,15 +266,7 @@ class Call:
             await auto_clean(popped)
 
             if not check:
-                # Queue empty: Send nice message, clear chat, and leave
-                try:
-                    await app.send_message(
-                        popped["chat_id"],
-                        "<b>Queue Finished!</b> 📉\n\nThere are no more tracks in the playlist.\nLeaving the Voice Chat. Goodbye! 👋"
-                    )
-                except:
-                    pass
-                    
+                # Queue empty: Just leave
                 await _clear_(chat_id)
                 self.active_calls.discard(chat_id)
                 try:
@@ -443,15 +430,12 @@ class Call:
                 is_left_group = status & ChatUpdate.Status.LEFT_GROUP
 
                 if is_closed or is_kicked or is_left_group:
-                    # ✅ FIXED: Only allow the ACTIVE assistant to send the message
-                    # This prevents 4-5 duplicate messages from multiple assistants
+                    # Filter: Only the ACTIVE assistant sends the message
                     try:
                         active_client = await group_assistant(self, chat_id)
                         if client != active_client:
                             return
                     except:
-                        # If we can't verify, we proceed cautiously or return to be safe
-                        # Usually better to be safe than spam
                         pass
 
                     reason = "Unknown error"
@@ -462,14 +446,13 @@ class Call:
                     elif is_left_group:
                         reason = "Assistant left the group"
 
-                    # Professional Message Format
                     try:
                         await app.send_message(
                             chat_id,
                             (
-                                "<b>⚠️ Voice Chat Ended</b>\n\n"
+                                "<b>⚠️ Voice Chat Streaming Ended</b>\n\n"
                                 f"**Reason:** {reason}.\n"
-                                "<i>Playback has been stopped and the assistant has disconnected.</i>"
+                                "<i>Playback has been stopped.</i>"
                             )
                         )
                     except Exception:
@@ -478,7 +461,6 @@ class Call:
                     await self.stop_stream(chat_id)
                 
                 elif status & ChatUpdate.Status.LEFT_CALL:
-                    # Just cleaning up normal leaves (e.g. /stop command)
                     await self.stop_stream(chat_id)
 
         for assistant in assistants:
