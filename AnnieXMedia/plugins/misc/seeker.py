@@ -6,7 +6,7 @@ from AnnieXMedia.utils.database import get_active_chats, is_music_playing
 
 
 async def timer():
-    while not await asyncio.sleep(1):
+    while not await asyncio.sleep(5):
         active_chats = await get_active_chats()
         for chat_id in active_chats:
             if not await is_music_playing(chat_id):
